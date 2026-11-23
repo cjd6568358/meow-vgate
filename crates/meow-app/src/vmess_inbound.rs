@@ -198,33 +198,58 @@ where
         sink.relay(metadata, &mut tunnel_side).await;
     });
 
-    let mut cipher =
-        BodyCipher::new_server_full(request.security, &request.req_key, &request.req_iv);
-    let mut record = Vec::new();
-    // 5. Pump: encrypted KCP records -> plaintext tunnel, and back.
-    loop {
-        // Read one encrypted request record, decrypt, forward to tunnel.
-        match cipher.read_record_into(&mut stream, &mut record).await {
-            Ok(Some(())) => {
-                if vmess_write.write_all(&record).await.is_err() {
-                    break;
+    // 5. Two independent pumps. VMess is full-duplex: the client may send a
+    // request body and wait for the response before sending anything more.
+    // A single read-then-write loop would deadlock in that case, so split the
+    // stream and run each direction in its own task.
+    let (mut kcp_read, mut kcp_write) = tokio::io::split(stream);
+
+    // Inbound: encrypted KCP records -> decrypted plaintext -> tunnel.
+    let security = request.security;
+    let req_key = request.req_key;
+    let req_iv = request.req_iv;
+    let inbound = tokio::spawn(async move {
+        let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
+        let mut record = Vec::new();
+        let mut writer = vmess_write;
+        loop {
+            match cipher.read_record_into(&mut kcp_read, &mut record).await {
+                Ok(Some(())) => {
+                    if writer.write_all(&record).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+    });
+
+    // Outbound: tunnel plaintext -> encrypted records -> KCP peer.
+    let outbound = tokio::spawn(async move {
+        let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
+        let mut reader = vmess_read;
+        let mut plain = [0u8; 16 * 1024];
+        loop {
+            match reader.read(&mut plain).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if cipher
+                        .write_record(&mut kcp_write, &plain[..n])
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
-            Ok(None) => break,
-            Err(e) => return Err(anyhow!("vmess body read: {e}")),
         }
-        // Drain any plaintext the tunnel wants to send back, encrypt, write.
-        let mut plain = [0u8; 16 * 1024];
-        match vmess_read.read(&mut plain).await {
-            Ok(0) => break,
-            Ok(n) => {
-                cipher
-                    .write_record(&mut stream, &plain[..n])
-                    .await
-                    .map_err(|e| anyhow!("vmess body write: {e}"))?;
-            }
-            Err(e) => return Err(anyhow!("vmess tunnel read: {e}")),
-        }
+    });
+
+    // Keep the relay alive until either direction ends, then tear down.
+    tokio::select! {
+        _ = &mut relay => {},
+        _ = inbound => {},
+        _ = outbound => {},
     }
     relay.abort();
     Ok(())
