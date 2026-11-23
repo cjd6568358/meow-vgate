@@ -143,12 +143,16 @@ fn metadata_for(request: &VmessRequest, sink: &RouteSink) -> Metadata {
     }
 }
 
-/// Serve one VMess session end to end.
-pub async fn handle_vmess_session(
-    mut stream: KcpStream,
+/// Serve one VMess session end to end. Generic over the byte transport so
+/// tests can drive it with an in-memory duplex stream.
+pub async fn handle_vmess_session<S>(
+    mut stream: S,
     users: Arc<Vec<[u8; 16]>>,
     sink: RouteSink,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     // 1. Read the fixed 42-byte AEAD header prefix.
     let mut prefix = [0u8; 42];
     stream
@@ -305,5 +309,36 @@ mod tests {
     #[test]
     fn rejects_bad_version() {
         assert!(parse_plaintext_header(&[0x02; 50]).is_err());
+    }
+
+    #[test]
+    fn client_sealed_header_authenticates() {
+        // Mirror what a conformant client (mihomo/FlClash) emits: seal with
+        // meow-proxy's client path, then open with our server path.
+        let uuid = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01,
+        ];
+        let key = cmd_key(&uuid);
+        let metadata = Metadata {
+            host: SmolStr::from("example.com"),
+            dst_port: 443,
+            ..Default::default()
+        };
+        let sealed = meow_proxy::vmess::header::seal_request_header(
+            &key,
+            Security::Aes128Gcm,
+            &metadata,
+            false,
+        )
+        .expect("client seal");
+        let opened = authenticate(&[uuid], &sealed.bytes).expect("server must open client header");
+        assert_eq!(opened.host, "example.com");
+        assert_eq!(opened.port, 443);
+        assert_eq!(opened.command, CMD_TCP);
+        assert_eq!(opened.security, Security::Aes128Gcm);
+        assert_eq!(opened.req_key, sealed.req_key);
+        assert_eq!(opened.req_iv, sealed.req_iv);
+        assert_eq!(opened.resp_v, sealed.resp_v);
     }
 }
