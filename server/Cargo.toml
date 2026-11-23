@@ -1,0 +1,48 @@
+# meow-server — server-side inbounds for meow-vgate.
+#
+# WORKSPACE ISOLATION (do not remove):
+# This package is NOT in the root `members` (the root lists it in `exclude`),
+# so `cargo build --workspace` never compiles, links, or measures it and the
+# 8 MiB aarch64-musl client cap stays unchanged. meow-app reaches it only via
+# an optional path dep behind `server-inbound`. It cannot declare its own
+# `[workspace]`: Cargo forbids a workspace member from path-depending on a
+# separate workspace root, which would break the single-process build.
+#
+# The symmetry gap in ADR-0001 is handled here, not in meow-transport: that
+# crate is client-only, forbids server code in src/, and must not gain a
+# dependency on this package. See server/src/transport.rs.
+#
+# TARGET MATRIX (owner-specified): aarch64-unknown-linux-musl and
+# armv7-unknown-linux-gnueabihf. The 8 MiB aarch64-musl cap applies to the
+# *client* binary; this crate has its own size budget to be set by a new ADR
+# before it is ever linked into a release image. All dependencies here are
+# pure Rust (no boring-sys / OpenSSL), so `cargo check --target ...` needs no C
+# cross-toolchain; a full cross link still needs the matching GCC linker.
+#
+# Run checks from this directory:
+#   cargo fmt --all -- --check
+#   cargo clippy --all-targets -- -D warnings
+#   cargo test --all-targets
+#   cargo check --all-targets --target aarch64-unknown-linux-musl
+#   cargo check --all-targets --target armv7-unknown-linux-gnueabihf
+
+[package]
+name = "meow-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "io-util", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+tracing = "0.1"
+uuid = "1"
+
+[dev-dependencies]

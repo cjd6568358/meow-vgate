@@ -30,6 +30,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
+#[cfg(feature = "server-inbound")]
+mod server_inbound;
 #[cfg(target_os = "windows")]
 mod windows_service;
 
@@ -704,6 +706,10 @@ fn listener_feature_gate(spec: &meow_config::ListenerSpec) -> Option<&'static st
         S::Shadowsocks(_) => {
             (!cfg!(feature = "listener-shadowsocks")).then_some("listener-shadowsocks")
         }
+        // These variants only exist when meow-config's `server-inbound`
+        // feature is on, which this crate's feature always enables.
+        #[cfg(feature = "server-inbound")]
+        S::Vless(_) | S::Vmess(_) => None,
     }
 }
 
@@ -1497,6 +1503,50 @@ async fn run(
                         nl.name
                     );
                 }
+            }
+            #[cfg(feature = "server-inbound")]
+            ListenerSpec::Vless(config) => {
+                let socket = match tokio::net::TcpListener::bind(addr).await {
+                    Ok(socket) => socket,
+                    Err(e) => {
+                        listener_failed(&nl.name, &format!("bind {addr} failed: {e}"));
+                        continue;
+                    }
+                };
+                let bound = socket.local_addr().unwrap_or(addr);
+                nl.port = bound.port();
+
+                let users = match server_inbound::parse_users(&config.users) {
+                    Ok(users) => users,
+                    Err(e) => {
+                        listener_failed(&nl.name, &format!("{e:#}"));
+                        continue;
+                    }
+                };
+
+                let tunnel = tunnel.clone();
+                let config = config.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        server_inbound::serve_vless(socket, &config, users, tunnel).await
+                    {
+                        error!("VLESS listener error: {e}");
+                    }
+                });
+                info!("VLESS/WS listener '{}' started on {}", nl.name, bound);
+            }
+            #[cfg(feature = "server-inbound")]
+            ListenerSpec::Vmess(_) => {
+                // mKCP server is still a typed placeholder; fail loudly
+                // rather than silently accepting connections we cannot serve.
+                listener_failed(
+                    &nl.name,
+                    "type: vmess server inbound is not implemented yet (mKCP pending)",
+                );
+                warn!(
+                    "listener '{}': vmess server inbound is not implemented; skipping",
+                    nl.name
+                );
             }
         }
     }

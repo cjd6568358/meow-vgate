@@ -8,10 +8,10 @@ name: Server inbound
 on:
   push:
     branches: [server-inbound]
-    paths: ["crates/**", ".github/workflows/server-inbound.yml"]
+    paths: ["crates/**", "server/**", "Cargo.toml", ".github/workflows/server-inbound.yml"]
   pull_request:
     branches: [server-inbound]
-    paths: ["crates/**", ".github/workflows/server-inbound.yml"]
+    paths: ["crates/**", "server/**", "Cargo.toml", ".github/workflows/server-inbound.yml"]
   workflow_dispatch:
 
 concurrency:
@@ -44,3 +44,27 @@ jobs:
 
       - name: Clippy (server-inbound)
         run: cargo clippy -p meow-config --features server-inbound --all-targets -- -D warnings
+
+  app-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Server crate checks
+        working-directory: server
+        run: |
+          cargo fmt -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --all-targets
+
+      - name: C-03 single-process build
+        run: cargo clippy -p meow-app --features server-inbound --all-targets -- -D warnings
+
+      - name: Compile test (never run cross binaries)
+        run: cargo check -p meow-app --features server-inbound --tests

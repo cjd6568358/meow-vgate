@@ -17,6 +17,11 @@ members = [
     "crates/meow-bench",
     "crates/meow-cli",
 ]
+# FORK DELTA (meow-vgate): server/ holds the single-process server inbounds.
+# It is NOT a workspace member (so `cargo build --workspace` and the 8 MiB
+# client cap ignore it), but meow-app reaches it via an optional path dep for
+# the `server-inbound` feature. `exclude` keeps cargo from auto-discovering it.
+exclude = ["server"]
 
 [profile.release]
 lto = true

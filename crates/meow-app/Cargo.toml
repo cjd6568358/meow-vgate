@@ -93,6 +93,10 @@ listener-tun = ["meow-listener/listener-tun", "meow-api/listener-tun"]
 # Not in `minimal`: it would take half the room left under that bundle's
 # 8 MiB aarch64 cap (ADR-0007).
 listener-shadowsocks = ["meow-listener/listener-shadowsocks"]
+# FORK DELTA (meow-vgate): single-process VLESS/VMess server inbounds for the
+# F4610U drop-in replacement. Opt-in so the client default build and its
+# 8 MiB cap are unchanged. See server/docs/adr/0002.
+server-inbound = ["meow-config/server-inbound", "dep:meow-server"]
 
 # Convenience bundles
 minimal = ["ss", "trojan", "dns-server", "listener-mixed"]
@@ -122,6 +126,10 @@ meow-common = { workspace = true }
 meow-config = { workspace = true, default-features = false }
 meow-rules = { workspace = true }
 meow-tunnel = { workspace = true }
+# FORK DELTA: optional path dep — the server crate is its own workspace and
+# must never become a root workspace member.
+meow-server = { path = "../../server", optional = true }
+uuid = { workspace = true }
 meow-listener = { workspace = true, default-features = false }
 meow-dns = { workspace = true, default-features = false }
 meow-api = { workspace = true }
