@@ -2737,10 +2737,12 @@ dependencies = [
 name = "meow-server"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "async-trait",
  "bytes",
  "clap",
  "futures-util",
+ "sha2",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",

@@ -229,6 +229,10 @@ impl BodyCipher {
     /// records keyed by `req_key`/`req_iv`, writes response-body records keyed
     /// by the SHA-256-derived response material. Both directions are built,
     /// so a single value can bridge a VMess session in both directions.
+    ///
+    /// Consumed by meow-app's `server-inbound` feature, not inside this crate;
+    /// the allow keeps `cargo clippy -D warnings` green in client-only builds.
+    #[allow(dead_code)]
     pub fn new_server_full(security: Security, req_key: &[u8; 16], req_iv: &[u8; 16]) -> Self {
         let (resp_key, resp_iv) = response_body_keys(req_key, req_iv);
         Self {
