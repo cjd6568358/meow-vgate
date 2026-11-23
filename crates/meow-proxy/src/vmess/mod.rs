@@ -1,4 +1,6 @@
-mod body;
+// FORK DELTA (meow-vgate): public so the server-inbound feature can reuse the
+// BodyCipher key schedule for VMess server sessions.
+pub mod body;
 mod conn;
 pub mod header;
 mod kdf;

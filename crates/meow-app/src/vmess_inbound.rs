@@ -5,8 +5,7 @@
 //! the decrypted body into the shared tunnel. Response bodies are
 //! re-encrypted with the response keys the client derives independently.
 
-use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
