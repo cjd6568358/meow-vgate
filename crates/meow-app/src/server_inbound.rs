@@ -11,8 +11,7 @@ use std::sync::Arc;
 use anyhow::Result as AnyhowResult;
 use async_trait::async_trait;
 use meow_common::{ConnType, Metadata, Network};
-use meow_config::{VlessListenerConfig, VmessListenerConfig};
-use meow_server::error::ServerError;
+use meow_config::VlessListenerConfig;
 use meow_server::listener::{serve_vless_ws, SessionHandler};
 use meow_server::stream::DynStream;
 use meow_server::vless::{Destination, VlessRequest};
@@ -67,11 +66,8 @@ fn build_metadata(
 
 #[async_trait]
 impl SessionHandler for RouteSink {
-    async fn handle(
-        &self,
-        request: VlessRequest,
-        mut stream: DynStream,
-    ) -> meow_server::Result<()> {
+    async fn handle(&self, request: VlessRequest, stream: DynStream) -> meow_server::Result<()> {
+        let mut stream = stream;
         // Peer address is not retained through the handshake; source metadata
         // is best-effort (None / port 0), like other listeners before sniff.
         let metadata = self.metadata(&request, None);
@@ -113,12 +109,6 @@ pub async fn serve_vless(
         handler,
     )
     .await
-}
-
-/// VMess/mKCP is intentionally explicit: the config parses, but starting the
-/// listener fails loudly until the mKCP stack is implemented.
-pub fn vmess_not_implemented(_config: &VmessListenerConfig) -> ServerError {
-    ServerError::NotImplemented("vmess over mkcp (server inbound)")
 }
 
 #[cfg(test)]

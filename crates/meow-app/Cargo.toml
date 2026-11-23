@@ -130,6 +130,8 @@ meow-tunnel = { workspace = true }
 # must never become a root workspace member.
 meow-server = { path = "../../server", optional = true }
 uuid = { workspace = true }
+async-trait = { workspace = true }
+smol_str = { workspace = true }
 meow-listener = { workspace = true, default-features = false }
 meow-dns = { workspace = true, default-features = false }
 meow-api = { workspace = true }
