@@ -153,29 +153,32 @@ pub async fn handle_vmess_session<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    // 1. Read the fixed 42-byte AEAD header prefix.
+    // 1. Read the fixed 42-byte AEAD header prefix (auth_id + sealed length +
+    // conn_nonce). Try each configured user's cmd_key to decrypt the length.
     let mut prefix = [0u8; 42];
     stream
         .read_exact(&mut prefix)
         .await
-        .map_err(|e| anyhow!("vmess header read: {e}"))?;
-    // The AEAD header's payload follows: read enough for a typical header.
-    let mut header = prefix.to_vec();
-    // Peek more bytes if a larger plaintext header is present. mKCP delivers
-    // a stream, so we read what is immediately available via a short read.
-    let mut extra = [0u8; 512];
-    // Non-blocking-ish: read with a short deadline to avoid hanging when the
-    // client waits for the response header before sending body records.
-    let more = tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        stream.read(&mut extra),
-    )
-    .await
-    .unwrap_or(Ok(0))
-    .unwrap_or(0);
-    header.extend_from_slice(&extra[..more]);
+        .map_err(|e| anyhow!("vmess header prefix read: {e}"))?;
+    let frame_len = users
+        .iter()
+        .find_map(|uuid| {
+            meow_proxy::vmess::header::request_header_frame_len(&cmd_key(uuid), &prefix).ok()
+        })
+        .ok_or_else(|| anyhow!("vmess header length AEAD open failed"))?;
+    if frame_len < 58 || frame_len > 64 * 1024 {
+        return Err(anyhow!(
+            "implausible vmess header frame length: {frame_len}"
+        ));
+    }
 
-    // 2. Authenticate against the configured users.
+    // 2. Read exactly the remaining sealed payload, then authenticate.
+    let mut header = prefix.to_vec();
+    header.resize(frame_len, 0);
+    stream
+        .read_exact(&mut header[42..])
+        .await
+        .map_err(|e| anyhow!("vmess header payload read: {e}"))?;
     let request = authenticate(&users, &header).ok_or_else(|| anyhow!("vmess auth failed"))?;
     if request.command != CMD_TCP && request.command != CMD_UDP {
         return Err(anyhow!("unsupported vmess command: {}", request.command));

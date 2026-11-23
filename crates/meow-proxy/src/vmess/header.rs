@@ -408,6 +408,37 @@ pub fn server_open_request_header(cmd_key: &[u8; 16], wire: &[u8]) -> Result<Vec
     Ok(plaintext)
 }
 
+/// Given the fixed 42-byte AEAD request-header prefix, decrypt the sealed
+/// length and return the exact total wire length (`42 + L + 16`). A conformant
+/// server uses this to `read_exact` precisely the right number of bytes
+/// instead of guessing from a short read.
+#[allow(dead_code)]
+pub fn request_header_frame_len(cmd_key: &[u8; 16], prefix42: &[u8]) -> Result<usize, String> {
+    if prefix42.len() < 42 {
+        return Err("vmess header prefix too short".to_string());
+    }
+    let auth_id = &prefix42[0..16];
+    let encrypted_length = &prefix42[16..34];
+    let conn_nonce = &prefix42[34..42];
+    let length_key = kdf16(
+        cmd_key,
+        &[b"VMess Header AEAD Key_Length", auth_id, conn_nonce],
+    );
+    let length_iv = kdf12(
+        cmd_key,
+        &[b"VMess Header AEAD Nonce_Length", auth_id, conn_nonce],
+    );
+    let mut buf = encrypted_length.to_vec();
+    Aead::aes_128_gcm(&length_key)
+        .open_trailing(&length_iv, auth_id, &mut buf)
+        .map_err(|_| "vmess length AEAD open failed".to_string())?;
+    if buf.len() != 2 {
+        return Err("vmess length plaintext is not 2 bytes".to_string());
+    }
+    let plaintext_len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+    Ok(42 + plaintext_len + 16)
+}
+
 /// Seal a minimal VMess response header `[resp_v, 0, 0, 0]` as a conformant
 /// server does.
 #[allow(dead_code)]
