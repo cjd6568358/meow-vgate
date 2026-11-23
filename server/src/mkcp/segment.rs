@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn rejects_too_many_ack_numbers() {
-        let mut bytes = vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 200];
+        let bytes = vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 200];
         assert_eq!(parse(&bytes), Err(SegmentError::InvalidLength));
     }
 }
