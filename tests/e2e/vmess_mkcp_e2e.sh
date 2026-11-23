@@ -41,12 +41,17 @@ fi
 
 # 3. Request through the client; must traverse our VMess/mKCP server.
 echo "=== curl via VMess/mKCP chain ==="
-curl -fsS --max-time 30 \
+set +e
+curl -fsS --max-time 25 \
   --proxy http://127.0.0.1:17891 \
   "http://httpbin.org/get?e2e=vmess-mkcp" \
   -w '\nHTTP=%{http_code}\n'
+CURL_STATUS=$?
+set -e
 
 echo "=== server log tail ==="
-tail -30 /tmp/meow-server-e2e.log
+tail -60 /tmp/meow-server-e2e.log || true
 echo "=== client log tail ==="
-tail -30 /tmp/meow-client-e2e.log
+tail -60 /tmp/meow-client-e2e.log || true
+
+exit "$CURL_STATUS"
