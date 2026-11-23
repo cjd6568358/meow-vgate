@@ -365,7 +365,6 @@ fn fnv1a32(data: &[u8]) -> u32 {
 /// re-deriving every key from the wire bytes.
 #[allow(dead_code)]
 pub fn server_open_request_header(cmd_key: &[u8; 16], wire: &[u8]) -> Result<Vec<u8>, String> {
-    use aes_gcm::aead::{Aead, Payload};
     if wire.len() < 42 {
         return Err("vmess header too short".to_string());
     }
@@ -382,17 +381,14 @@ pub fn server_open_request_header(cmd_key: &[u8; 16], wire: &[u8]) -> Result<Vec
         cmd_key,
         &[b"VMess Header AEAD Nonce_Length", auth_id, conn_nonce],
     );
-    let len_cipher = Aes128Gcm::new_from_slice(&length_key).map_err(|e| e.to_string())?;
-    let len_pt = len_cipher
-        .decrypt(
-            Nonce::from_slice(&length_iv),
-            Payload {
-                msg: encrypted_length,
-                aad: auth_id,
-            },
-        )
+    let mut len_buf = encrypted_length.to_vec();
+    Aead::aes_128_gcm(&length_key)
+        .open_trailing(&length_iv, auth_id, &mut len_buf)
         .map_err(|_| "length AEAD open failed".to_string())?;
-    let l = u16::from_be_bytes([len_pt[0], len_pt[1]]) as usize;
+    if len_buf.len() != 2 {
+        return Err("length AEAD open: bad plaintext size".to_string());
+    }
+    let l = u16::from_be_bytes([len_buf[0], len_buf[1]]) as usize;
     if encrypted_payload.len() != l + 16 {
         return Err(format!(
             "payload len {} != L+16 ({})",
@@ -402,15 +398,9 @@ pub fn server_open_request_header(cmd_key: &[u8; 16], wire: &[u8]) -> Result<Vec
     }
     let header_key = kdf16(cmd_key, &[b"VMess Header AEAD Key", auth_id, conn_nonce]);
     let header_iv = kdf12(cmd_key, &[b"VMess Header AEAD Nonce", auth_id, conn_nonce]);
-    let hdr_cipher = Aes128Gcm::new_from_slice(&header_key).map_err(|e| e.to_string())?;
-    let plaintext = hdr_cipher
-        .decrypt(
-            Nonce::from_slice(&header_iv),
-            Payload {
-                msg: encrypted_payload,
-                aad: auth_id,
-            },
-        )
+    let mut plaintext = encrypted_payload.to_vec();
+    Aead::aes_128_gcm(&header_key)
+        .open_trailing(&header_iv, auth_id, &mut plaintext)
         .map_err(|_| "payload AEAD open failed".to_string())?;
     if plaintext.len() != l {
         return Err(format!("plaintext len {} != L {}", plaintext.len(), l));
@@ -426,20 +416,17 @@ pub fn seal_response_header(req_key: &[u8; 16], req_iv: &[u8; 16], resp_v: u8) -
     let header = [resp_v, 0, 0, 0];
     let len_key = kdf16(&resp_key, &[b"AEAD Resp Header Len Key"]);
     let len_iv = kdf12(&resp_iv, &[b"AEAD Resp Header Len IV"]);
-    let len_ct = Aes128Gcm::new_from_slice(&len_key)
-        .unwrap()
-        .encrypt(
-            Nonce::from_slice(&len_iv),
-            (header.len() as u16).to_be_bytes().as_ref(),
-        )
-        .unwrap();
+    let mut len_buf = (header.len() as u16).to_be_bytes().to_vec();
+    Aead::aes_128_gcm(&len_key)
+        .seal_append(&len_iv, &[], &mut len_buf)
+        .expect("vmess response length seal");
     let header_key = kdf16(&resp_key, &[b"AEAD Resp Header Key"]);
     let header_iv = kdf12(&resp_iv, &[b"AEAD Resp Header IV"]);
-    let header_ct = Aes128Gcm::new_from_slice(&header_key)
-        .unwrap()
-        .encrypt(Nonce::from_slice(&header_iv), header.as_ref())
-        .unwrap();
-    [len_ct, header_ct].concat()
+    let mut header_buf = header.to_vec();
+    Aead::aes_128_gcm(&header_key)
+        .seal_append(&header_iv, &[], &mut header_buf)
+        .expect("vmess response header seal");
+    [len_buf, header_buf].concat()
 }
 
 #[cfg(test)]
