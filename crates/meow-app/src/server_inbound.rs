@@ -20,6 +20,7 @@ use smol_str::SmolStr;
 
 /// Session handler that feeds an authenticated VLESS stream into the shared
 /// client tunnel (rules, DNS, outbound adapters, and connection stats).
+#[derive(Clone)]
 pub struct RouteSink {
     tunnel: Tunnel,
     in_name: SmolStr,
@@ -37,6 +38,23 @@ impl RouteSink {
 
     fn metadata(&self, request: &VlessRequest, peer: Option<SocketAddr>) -> Metadata {
         build_metadata(request, peer, &self.in_name, self.in_port)
+    }
+
+    /// Feed an arbitrary authenticated inbound stream (VLESS or VMess) into
+    /// the shared tunnel with fully-resolved metadata.
+    pub async fn relay<S>(&self, metadata: Metadata, stream: &mut S)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        meow_tunnel::route_inbound_tcp(self.tunnel.inner(), stream, metadata, &[]).await;
+    }
+
+    pub fn inbound_name(&self) -> &SmolStr {
+        &self.in_name
+    }
+
+    pub fn inbound_port(&self) -> u16 {
+        self.in_port
     }
 }
 
@@ -71,7 +89,7 @@ impl SessionHandler for RouteSink {
         // Peer address is not retained through the handshake; source metadata
         // is best-effort (None / port 0), like other listeners before sniff.
         let metadata = self.metadata(&request, None);
-        meow_tunnel::route_inbound_tcp(self.tunnel.inner(), &mut stream, metadata, &[]).await;
+        self.relay(metadata, &mut stream).await;
         Ok(())
     }
 }

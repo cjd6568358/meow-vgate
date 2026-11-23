@@ -400,11 +400,10 @@ pub(crate) mod tests {
     /// Seal a minimal VMess response header `[resp_v, 0, 0, 0]` the way a
     /// conformant server would — shared by the conn/mod duplex tests that
     /// play the server side.
-    pub(crate) fn seal_response_header(
-        req_key: &[u8; 16],
-        req_iv: &[u8; 16],
-        resp_v: u8,
-    ) -> Vec<u8> {
+    /// FORK DELTA (meow-vgate): made public so the server-side VMess inbound
+    /// can emit the response header using the exact same construction the
+    /// client-side tests use to emulate a conformant server.
+    pub fn seal_response_header(req_key: &[u8; 16], req_iv: &[u8; 16], resp_v: u8) -> Vec<u8> {
         let (resp_key, resp_iv) = response_body_keys(req_key, req_iv);
         let header = [resp_v, 0, 0, 0];
 

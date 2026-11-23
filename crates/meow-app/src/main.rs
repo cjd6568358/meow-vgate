@@ -32,6 +32,8 @@ use tracing::{error, info, warn};
 
 #[cfg(feature = "server-inbound")]
 mod server_inbound;
+#[cfg(feature = "server-inbound")]
+mod vmess_inbound;
 #[cfg(target_os = "windows")]
 mod windows_service;
 
@@ -1536,17 +1538,58 @@ async fn run(
                 info!("VLESS/WS listener '{}' started on {}", nl.name, bound);
             }
             #[cfg(feature = "server-inbound")]
-            ListenerSpec::Vmess(_) => {
-                // mKCP server is still a typed placeholder; fail loudly
-                // rather than silently accepting connections we cannot serve.
-                listener_failed(
-                    &nl.name,
-                    "type: vmess server inbound is not implemented yet (mKCP pending)",
+            ListenerSpec::Vmess(config) => {
+                let users = match server_inbound::parse_users(&config.users) {
+                    Ok(users) => std::sync::Arc::new(users),
+                    Err(e) => {
+                        listener_failed(&nl.name, &format!("{e:#}"));
+                        continue;
+                    }
+                };
+                let (mtu, tti, uplink, downlink, read_write_buffer) =
+                    config.mkcp_config.as_ref().map_or((0, 0, 0, 0, 0), |m| {
+                        (
+                            m.mtu.unwrap_or(0),
+                            m.tti.unwrap_or(0),
+                            m.uplink_capacity.unwrap_or(0),
+                            m.downlink_capacity.unwrap_or(0),
+                            m.read_buffer.unwrap_or(0).max(m.write_buffer.unwrap_or(0)),
+                        )
+                    });
+                let kcp_config = meow_server::mkcp::conn::KcpConfig::from_inbound(
+                    0,
+                    mtu,
+                    tti,
+                    uplink,
+                    downlink,
+                    read_write_buffer,
                 );
-                warn!(
-                    "listener '{}': vmess server inbound is not implemented; skipping",
-                    nl.name
-                );
+                let socket = match tokio::net::UdpSocket::bind(addr).await {
+                    Ok(socket) => socket,
+                    Err(e) => {
+                        listener_failed(&nl.name, &format!("bind UDP {addr} failed: {e}"));
+                        continue;
+                    }
+                };
+                let bound = socket.local_addr().unwrap_or(addr);
+                nl.port = bound.port();
+                let sink =
+                    server_inbound::RouteSink::new(tunnel.clone(), nl.name.as_str(), bound.port());
+                let tti_duration = std::time::Duration::from_millis(kcp_config.tti as u64);
+                tokio::spawn(async move {
+                    if let Err(e) = vmess_inbound::serve_vmess_mkcp(
+                        socket,
+                        users,
+                        sink,
+                        kcp_config,
+                        tti_duration,
+                    )
+                    .await
+                    {
+                        error!("VMess/mKCP listener error: {e}");
+                    }
+                });
+                info!("VMess/mKCP listener '{}' started on UDP {}", nl.name, bound);
             }
         }
     }
