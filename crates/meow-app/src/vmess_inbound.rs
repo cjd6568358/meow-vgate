@@ -16,7 +16,7 @@ use meow_proxy::vmess::header::{
 };
 use meow_server::mkcp::auth::Security as MkcpSecurity;
 use meow_server::mkcp::conn::KcpConfig;
-use meow_server::mkcp::listener::{KcpStream, ListenerConfig, MkcpListener};
+use meow_server::mkcp::listener::{ListenerConfig, MkcpListener};
 use smol_str::SmolStr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
