@@ -111,7 +111,7 @@ pub fn parse_plaintext_header(plain: &[u8]) -> Result<VmessRequest> {
 }
 
 /// Find the configured user whose cmd_key can open the request header.
-pub fn authenticate<'a>(users: &'a [[u8; 16]], wire: &[u8]) -> Option<VmessRequest> {
+pub fn authenticate(users: &[[u8; 16]], wire: &[u8]) -> Option<VmessRequest> {
     if wire.len() < 42 {
         return None;
     }
@@ -304,6 +304,6 @@ mod tests {
 
     #[test]
     fn rejects_bad_version() {
-        assert!(parse_plaintext_header(&vec![0x02; 50]).is_err());
+        assert!(parse_plaintext_header(&[0x02; 50]).is_err());
     }
 }
