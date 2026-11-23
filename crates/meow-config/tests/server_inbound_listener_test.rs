@@ -136,10 +136,9 @@ listeners:
     port: 0
 "#;
     // `Config` intentionally has no Debug impl, so `expect_err` cannot be
-    // used here (its Ok type must be Debug). Match the Err explicitly.
-    let error = match load_config_from_str(yaml).await {
-        Ok(_) => panic!("unknown listener type must be rejected"),
-        Err(error) => error,
+    // used here (its Ok type must be Debug). Destructure the Err explicitly.
+    let Err(error) = load_config_from_str(yaml).await else {
+        panic!("unknown listener type must be rejected")
     };
     let message = format!("{error:#}");
     assert!(
@@ -161,9 +160,8 @@ listeners:
     listen: 127.0.0.1
     port: 0
 "#;
-    let error = match load_config_from_str(yaml).await {
-        Ok(_) => panic!("missing users must be rejected"),
-        Err(error) => error,
+    let Err(error) = load_config_from_str(yaml).await else {
+        panic!("missing users must be rejected")
     };
     assert!(format!("{error:#}").contains("listeners[empty-vless].users"));
 }
