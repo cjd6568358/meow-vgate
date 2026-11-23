@@ -53,6 +53,10 @@ mux = ["meow-proxy/mux"]
 # against the ADR-0007 size caps. Even when enabled, the code path is
 # force-disabled on iOS/Android targets (see `src/lib.rs`).
 external-ui-download = ["dep:zip"]
+# FORK DELTA (meow-vgate): parse the server-side `listeners:` entries used by
+# the F4610U deployment (type: vless / vmess). Off by default so the upstream
+# client build and its footprint budget are unchanged. See server/docs/adr/0002.
+server-inbound = []
 
 [dependencies]
 meow-common = { workspace = true }

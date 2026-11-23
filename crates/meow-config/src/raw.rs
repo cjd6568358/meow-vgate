@@ -489,6 +489,18 @@ pub struct RawListener {
     pub udp: Option<bool>,
     pub simple_obfs: Option<RawSimpleObfs>,
 
+    // ── FORK DELTA: server-side inbound listeners (meow-vgate) ──
+    // Only parsed when the `server-inbound` feature is on. Field names follow
+    // mihomo mainline exactly; `alterId` is camelCase in the wire config.
+    #[cfg(feature = "server-inbound")]
+    pub users: Option<Vec<RawInboundUser>>,
+    #[cfg(feature = "server-inbound")]
+    pub ws_path: Option<String>,
+    #[cfg(feature = "server-inbound")]
+    pub allow_insecure: Option<bool>,
+    #[cfg(feature = "server-inbound")]
+    pub mkcp_config: Option<RawMkcpConfig>,
+
     // ── upstream sub-options not yet supported by meow-rs ──
     // Captured as opaque `Value`s so their mere presence can be warned about
     // (ADR-0002: never silently ignore a mihomo flag) without modelling the
@@ -507,6 +519,32 @@ pub struct RawSimpleObfs {
     #[serde(default)]
     pub enable: bool,
     pub mode: Option<String>,
+}
+
+/// FORK DELTA: one `users:` entry of a vless/vmess `listeners:` item.
+#[cfg(feature = "server-inbound")]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RawInboundUser {
+    pub uuid: String,
+    pub flow: Option<String>,
+    /// VMess legacy field; mihomo spells it `alterId` (camelCase).
+    #[serde(rename = "alterId")]
+    pub alter_id: Option<u16>,
+}
+
+/// FORK DELTA: `mkcp-config` sub-block of a vmess `listeners:` item.
+#[cfg(feature = "server-inbound")]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawMkcpConfig {
+    pub enable: Option<bool>,
+    pub mtu: Option<u32>,
+    pub tti: Option<u32>,
+    pub uplink_capacity: Option<u32>,
+    pub downlink_capacity: Option<u32>,
+    pub congestion: Option<String>,
+    pub read_buffer: Option<u32>,
+    pub write_buffer: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

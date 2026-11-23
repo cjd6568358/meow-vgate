@@ -194,6 +194,12 @@ pub enum ListenerSpec {
     /// target address, and hands the decrypted flow to the tunnel. Mirrors
     /// upstream mihomo's `type: shadowsocks` listener.
     Shadowsocks(SsListenerConfig),
+    /// FORK DELTA (meow-vgate): VLESS server inbound (`type: vless`).
+    #[cfg(feature = "server-inbound")]
+    Vless(VlessListenerConfig),
+    /// FORK DELTA (meow-vgate): VMess server inbound (`type: vmess`).
+    #[cfg(feature = "server-inbound")]
+    Vmess(VmessListenerConfig),
 }
 
 /// Per-listener config for the `shadowsocks` inbound (`ListenerSpec::Shadowsocks`).
@@ -213,6 +219,52 @@ pub struct SsListenerConfig {
 
 fn default_ss_udp() -> bool {
     true
+}
+
+// ── FORK DELTA (meow-vgate): server-side inbound config ──
+// These types exist only with `server-inbound`. Field names follow mihomo
+// mainline; defaults that depend on transport behaviour are left to the
+// server crate so this hook stays a pure parse/validation layer.
+
+/// One authenticated user of a vless/vmess inbound listener.
+#[cfg(feature = "server-inbound")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboundUserConfig {
+    pub uuid: String,
+    pub flow: Option<String>,
+    /// VMess legacy `alterId`; `None` for VLESS users.
+    pub alter_id: Option<u16>,
+}
+
+/// `mkcp-config` of a vmess inbound listener.
+#[cfg(feature = "server-inbound")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MkcpInboundConfig {
+    pub enable: Option<bool>,
+    pub mtu: Option<u32>,
+    pub tti: Option<u32>,
+    pub uplink_capacity: Option<u32>,
+    pub downlink_capacity: Option<u32>,
+    pub congestion: Option<String>,
+    pub read_buffer: Option<u32>,
+    pub write_buffer: Option<u32>,
+}
+
+/// VLESS server inbound; `ws_path` selects the WebSocket upgrade path.
+#[cfg(feature = "server-inbound")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VlessListenerConfig {
+    pub users: Vec<InboundUserConfig>,
+    pub ws_path: Option<String>,
+    pub allow_insecure: bool,
+}
+
+/// VMess server inbound; `mkcp_config` carries the mKCP tuning block.
+#[cfg(feature = "server-inbound")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmessListenerConfig {
+    pub users: Vec<InboundUserConfig>,
+    pub mkcp_config: Option<MkcpInboundConfig>,
 }
 
 /// `ListenerSpec::TProxy::firewall` serde default: managed firewall rules
@@ -256,6 +308,10 @@ impl ListenerSpec {
             Self::Socks5 => "socks5",
             Self::TProxy { .. } => "tproxy",
             Self::Shadowsocks(_) => "shadowsocks",
+            #[cfg(feature = "server-inbound")]
+            Self::Vless(_) => "vless",
+            #[cfg(feature = "server-inbound")]
+            Self::Vmess(_) => "vmess",
         }
     }
 }
@@ -4255,6 +4311,12 @@ pub(crate) fn resolve_listener_bind(
     )
 }
 
+// FORK DELTA (meow-vgate): expected-type list in Class A hard errors.
+#[cfg(feature = "server-inbound")]
+const SUPPORTED_LISTENER_TYPES: &str = "mixed, http, socks5, tproxy, shadowsocks, vless, or vmess";
+#[cfg(not(feature = "server-inbound"))]
+const SUPPORTED_LISTENER_TYPES: &str = "mixed, http, socks5, tproxy, or shadowsocks";
+
 /// Parse `type:` string from a `listeners:` entry into a `ListenerSpec`.
 /// Hard errors on unknown types (Class A per ADR-0002).
 ///
@@ -4319,9 +4381,67 @@ fn parse_listener_spec(
             udp: true,
             simple_obfs: None,
         })),
-        other => anyhow::bail!(
-            "unknown listener type '{other}'; expected mixed, http, socks5, tproxy, or shadowsocks"
-        ),
+        #[cfg(feature = "server-inbound")]
+        "vless" => Ok(ListenerSpec::Vless(VlessListenerConfig {
+            users: build_inbound_users(raw_l, "vless")?,
+            ws_path: raw_l.ws_path.clone(),
+            allow_insecure: raw_l.allow_insecure.unwrap_or(false),
+        })),
+        #[cfg(feature = "server-inbound")]
+        "vmess" => Ok(ListenerSpec::Vmess(VmessListenerConfig {
+            users: build_inbound_users(raw_l, "vmess")?,
+            mkcp_config: raw_l.mkcp_config.as_ref().map(build_mkcp_config),
+        })),
+        other => {
+            anyhow::bail!("unknown listener type '{other}'; expected {SUPPORTED_LISTENER_TYPES}")
+        }
+    }
+}
+
+/// FORK DELTA: resolve and validate the `users:` list of a server inbound.
+/// An empty or missing user table is a Class A config error — the listener
+/// must never start with no authenticated identity.
+#[cfg(feature = "server-inbound")]
+fn build_inbound_users(
+    raw_l: &raw::RawListener,
+    listener_type: &str,
+) -> Result<Vec<InboundUserConfig>, anyhow::Error> {
+    let users = raw_l
+        .users
+        .as_ref()
+        .filter(|users| !users.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "listeners[{}].users: must not be empty for type: {listener_type}",
+                raw_l.name
+            )
+        })?;
+    users
+        .iter()
+        .map(|user| {
+            if user.uuid.trim().is_empty() {
+                anyhow::bail!("listeners[{}].users[].uuid: must not be empty", raw_l.name);
+            }
+            Ok(InboundUserConfig {
+                uuid: user.uuid.clone(),
+                flow: user.flow.clone(),
+                alter_id: user.alter_id,
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "server-inbound")]
+fn build_mkcp_config(raw: &raw::RawMkcpConfig) -> MkcpInboundConfig {
+    MkcpInboundConfig {
+        enable: raw.enable,
+        mtu: raw.mtu,
+        tti: raw.tti,
+        uplink_capacity: raw.uplink_capacity,
+        downlink_capacity: raw.downlink_capacity,
+        congestion: raw.congestion.clone(),
+        read_buffer: raw.read_buffer,
+        write_buffer: raw.write_buffer,
     }
 }
 
