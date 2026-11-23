@@ -212,14 +212,9 @@ where
         let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
         let mut record = Vec::new();
         let mut writer = vmess_write;
-        loop {
-            match cipher.read_record_into(&mut kcp_read, &mut record).await {
-                Ok(Some(())) => {
-                    if writer.write_all(&record).await.is_err() {
-                        break;
-                    }
-                }
-                Ok(None) | Err(_) => break,
+        while let Ok(Some(())) = cipher.read_record_into(&mut kcp_read, &mut record).await {
+            if writer.write_all(&record).await.is_err() {
+                break;
             }
         }
     });
