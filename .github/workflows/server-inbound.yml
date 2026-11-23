@@ -1,0 +1,46 @@
+# meow-vgate fork-only workflow.
+#
+# Upstream test.yml only triggers on pushes to `main`, so a job added there
+# never runs on the `server-inbound` branch. This dedicated workflow keeps the
+# fork's server-inbound delta on its own trigger and out of upstream files.
+name: Server inbound
+
+on:
+  push:
+    branches: [server-inbound]
+    paths: ["crates/**", ".github/workflows/server-inbound.yml"]
+  pull_request:
+    branches: [server-inbound]
+    paths: ["crates/**", ".github/workflows/server-inbound.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  config-hooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: C-01/C-02 config listener tests
+        run: cargo test -p meow-config --features server-inbound --test server_inbound_listener_test
+
+      - name: Clippy (server-inbound)
+        run: cargo clippy -p meow-config --features server-inbound --all-targets -- -D warnings
