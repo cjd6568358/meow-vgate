@@ -225,37 +225,6 @@ impl BodyCipher {
         }
     }
 
-    /// FORK DELTA (meow-vgate): server-side request-body reader. The server
-    /// DECRYPTS the client's request body with the raw req_key/req_iv (the
-    /// same material the client's `new_writer` used to encrypt). The write
-    /// half stays `Unbuilt`; responses use `new_server_writer`.
-    pub fn new_server_reader(security: Security, req_key: &[u8; 16], req_iv: &[u8; 16]) -> Self {
-        Self {
-            write: RecordCipher::Unbuilt,
-            write_iv: [0; 16],
-            read: RecordCipher::new(security, &expand_body_key(security, req_key)),
-            read_iv: *req_iv,
-            write_counter: 0,
-            read_counter: 0,
-            write_buf: Vec::new(),
-        }
-    }
-
-    /// FORK DELTA (meow-vgate): server-side response-body writer. The server
-    /// ENCRYPTS responses with the derived resp_key/resp_iv (the same material
-    /// the client's `from_response_keys` uses to decrypt).
-    pub fn new_server_writer(security: Security, resp_key: &[u8; 16], resp_iv: &[u8; 16]) -> Self {
-        Self {
-            write: RecordCipher::new(security, &expand_body_key(security, resp_key)),
-            write_iv: *resp_iv,
-            read: RecordCipher::Unbuilt,
-            read_iv: [0; 16],
-            write_counter: 0,
-            read_counter: 0,
-            write_buf: Vec::new(),
-        }
-    }
-
     /// FORK DELTA (meow-vgate): full server-side cipher — reads request-body
     /// records keyed by `req_key`/`req_iv`, writes response-body records keyed
     /// by the SHA-256-derived response material. Both directions are built,
