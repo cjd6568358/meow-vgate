@@ -153,6 +153,15 @@ impl Segment {
     }
 }
 
+/// Plain ACK fields used by the window layer (avoids cloning full segments).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AckFields {
+    pub receiving_window: u32,
+    pub receiving_next: u32,
+    pub timestamp: u32,
+    pub numbers: Vec<u32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentError {
     NeedMore,

@@ -8,6 +8,7 @@
 //! golden reference in `server/zig-docs/source/transport/{kcp,mkcp}/`.
 
 pub mod auth;
+pub mod receiving;
 pub mod rto;
 pub mod segment;
 pub mod window;

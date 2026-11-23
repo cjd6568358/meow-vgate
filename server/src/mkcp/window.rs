@@ -6,7 +6,7 @@
 //! through a closure supplied by the caller (the UDP session layer).
 
 use crate::mkcp::rto::RoundTripInfo;
-use crate::mkcp::segment::ACK_NUMBER_LIMIT;
+use crate::mkcp::segment::{AckFields, ACK_NUMBER_LIMIT};
 
 const HALF: u32 = 0x7FFF_FFFF;
 
@@ -253,15 +253,6 @@ impl SendingWindow {
         self.window.clear();
         self.closed = true;
     }
-}
-
-/// Plain ACK fields passed into `SendingWindow` (avoids a full Segment clone).
-#[derive(Debug, Clone)]
-pub struct AckFields {
-    pub receiving_window: u32,
-    pub receiving_next: u32,
-    pub timestamp: u32,
-    pub numbers: Vec<u32>,
 }
 
 #[cfg(test)]
