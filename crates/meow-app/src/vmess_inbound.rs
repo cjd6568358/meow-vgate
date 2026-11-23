@@ -190,10 +190,10 @@ where
 
     // 4. Bridge decrypted plaintext to the shared tunnel via a duplex pair.
     let (tunnel_side, vmess_side) = tokio::io::duplex(64 * 1024);
-    let (mut vmess_read, mut vmess_write) = tokio::io::split(vmess_side);
+    let (vmess_read, vmess_write) = tokio::io::split(vmess_side);
     let sink = sink.clone();
     let metadata = metadata_for(&request, &sink);
-    let relay = tokio::spawn(async move {
+    let mut relay = tokio::spawn(async move {
         let mut tunnel_side = tunnel_side;
         sink.relay(metadata, &mut tunnel_side).await;
     });
