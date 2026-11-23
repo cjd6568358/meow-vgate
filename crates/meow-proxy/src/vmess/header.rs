@@ -506,10 +506,9 @@ pub(crate) mod tests {
     /// (v2ray `OpenVMessAEADHeader`) does, re-deriving every key from the wire
     /// bytes. This catches the seal-order, plaintext-length, and length-salt
     /// bugs that a self-consistent seal/open pair would hide.
-    pub(crate) fn server_open_request_header(
-        cmd_key: &[u8; 16],
-        wire: &[u8],
-    ) -> Result<Vec<u8>, String> {
+    /// FORK DELTA (meow-vgate): made public so the server-side VMess inbound
+    /// can reuse the exact same AEAD open path that the golden vectors lock.
+    pub fn server_open_request_header(cmd_key: &[u8; 16], wire: &[u8]) -> Result<Vec<u8>, String> {
         use aes_gcm::aead::{Aead, Payload};
         let auth_id = &wire[0..16];
         let encrypted_length = &wire[16..34]; // 2 + 16 tag
