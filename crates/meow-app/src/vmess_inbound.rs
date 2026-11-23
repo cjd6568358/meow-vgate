@@ -166,7 +166,7 @@ where
             meow_proxy::vmess::header::request_header_frame_len(&cmd_key(uuid), &prefix).ok()
         })
         .ok_or_else(|| anyhow!("vmess header length AEAD open failed"))?;
-    if frame_len < 58 || frame_len > 64 * 1024 {
+    if !(58..=64 * 1024).contains(&frame_len) {
         return Err(anyhow!(
             "implausible vmess header frame length: {frame_len}"
         ));
