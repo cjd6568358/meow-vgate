@@ -356,6 +356,92 @@ fn fnv1a32(data: &[u8]) -> u32 {
     hash
 }
 
+// === FORK DELTA (meow-vgate): server-side header open/seal ===
+// These were test-only helpers in upstream. They are promoted to production
+// code so the server-inbound feature can authenticate and answer VMess
+// clients through the exact same golden-vector-locked code path the tests use.
+
+/// Open a sealed VMess AEAD request header as a conformant server does,
+/// re-deriving every key from the wire bytes.
+#[allow(dead_code)]
+pub fn server_open_request_header(cmd_key: &[u8; 16], wire: &[u8]) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::{Aead, Payload};
+    if wire.len() < 42 {
+        return Err("vmess header too short".to_string());
+    }
+    let auth_id = &wire[0..16];
+    let encrypted_length = &wire[16..34];
+    let conn_nonce = &wire[34..42];
+    let encrypted_payload = &wire[42..];
+
+    let length_key = kdf16(
+        cmd_key,
+        &[b"VMess Header AEAD Key_Length", auth_id, conn_nonce],
+    );
+    let length_iv = kdf12(
+        cmd_key,
+        &[b"VMess Header AEAD Nonce_Length", auth_id, conn_nonce],
+    );
+    let len_cipher = Aes128Gcm::new_from_slice(&length_key).map_err(|e| e.to_string())?;
+    let len_pt = len_cipher
+        .decrypt(
+            Nonce::from_slice(&length_iv),
+            Payload {
+                msg: encrypted_length,
+                aad: auth_id,
+            },
+        )
+        .map_err(|_| "length AEAD open failed".to_string())?;
+    let l = u16::from_be_bytes([len_pt[0], len_pt[1]]) as usize;
+    if encrypted_payload.len() != l + 16 {
+        return Err(format!(
+            "payload len {} != L+16 ({})",
+            encrypted_payload.len(),
+            l + 16
+        ));
+    }
+    let header_key = kdf16(cmd_key, &[b"VMess Header AEAD Key", auth_id, conn_nonce]);
+    let header_iv = kdf12(cmd_key, &[b"VMess Header AEAD Nonce", auth_id, conn_nonce]);
+    let hdr_cipher = Aes128Gcm::new_from_slice(&header_key).map_err(|e| e.to_string())?;
+    let plaintext = hdr_cipher
+        .decrypt(
+            Nonce::from_slice(&header_iv),
+            Payload {
+                msg: encrypted_payload,
+                aad: auth_id,
+            },
+        )
+        .map_err(|_| "payload AEAD open failed".to_string())?;
+    if plaintext.len() != l {
+        return Err(format!("plaintext len {} != L {}", plaintext.len(), l));
+    }
+    Ok(plaintext)
+}
+
+/// Seal a minimal VMess response header `[resp_v, 0, 0, 0]` as a conformant
+/// server does.
+#[allow(dead_code)]
+pub fn seal_response_header(req_key: &[u8; 16], req_iv: &[u8; 16], resp_v: u8) -> Vec<u8> {
+    let (resp_key, resp_iv) = response_body_keys(req_key, req_iv);
+    let header = [resp_v, 0, 0, 0];
+    let len_key = kdf16(&resp_key, &[b"AEAD Resp Header Len Key"]);
+    let len_iv = kdf12(&resp_iv, &[b"AEAD Resp Header Len IV"]);
+    let len_ct = Aes128Gcm::new_from_slice(&len_key)
+        .unwrap()
+        .encrypt(
+            Nonce::from_slice(&len_iv),
+            (header.len() as u16).to_be_bytes().as_ref(),
+        )
+        .unwrap();
+    let header_key = kdf16(&resp_key, &[b"AEAD Resp Header Key"]);
+    let header_iv = kdf12(&resp_iv, &[b"AEAD Resp Header IV"]);
+    let header_ct = Aes128Gcm::new_from_slice(&header_key)
+        .unwrap()
+        .encrypt(Nonce::from_slice(&header_iv), header.as_ref())
+        .unwrap();
+    [len_ct, header_ct].concat()
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -395,36 +481,6 @@ pub(crate) mod tests {
             )
             .map_err(|_| "length AEAD open failed".to_string())?;
         Ok(42 + u16::from_be_bytes([len_pt[0], len_pt[1]]) as usize + 16)
-    }
-
-    /// Seal a minimal VMess response header `[resp_v, 0, 0, 0]` the way a
-    /// conformant server would — shared by the conn/mod duplex tests that
-    /// play the server side.
-    /// FORK DELTA (meow-vgate): made public so the server-side VMess inbound
-    /// can emit the response header using the exact same construction the
-    /// client-side tests use to emulate a conformant server.
-    pub fn seal_response_header(req_key: &[u8; 16], req_iv: &[u8; 16], resp_v: u8) -> Vec<u8> {
-        let (resp_key, resp_iv) = response_body_keys(req_key, req_iv);
-        let header = [resp_v, 0, 0, 0];
-
-        let len_key = kdf16(&resp_key, &[b"AEAD Resp Header Len Key"]);
-        let len_iv = kdf12(&resp_iv, &[b"AEAD Resp Header Len IV"]);
-        let len_ct = Aes128Gcm::new_from_slice(&len_key)
-            .unwrap()
-            .encrypt(
-                Nonce::from_slice(&len_iv),
-                (header.len() as u16).to_be_bytes().as_ref(),
-            )
-            .unwrap();
-
-        let header_key = kdf16(&resp_key, &[b"AEAD Resp Header Key"]);
-        let header_iv = kdf12(&resp_iv, &[b"AEAD Resp Header IV"]);
-        let header_ct = Aes128Gcm::new_from_slice(&header_key)
-            .unwrap()
-            .encrypt(Nonce::from_slice(&header_iv), header.as_ref())
-            .unwrap();
-
-        [len_ct, header_ct].concat()
     }
 
     fn protocol_constants_and_hashes_match_reference() {
@@ -499,64 +555,6 @@ pub(crate) mod tests {
             }
         )
         .is_err());
-    }
-
-    /// Independently open a sealed request header the way a conformant server
-    /// (v2ray `OpenVMessAEADHeader`) does, re-deriving every key from the wire
-    /// bytes. This catches the seal-order, plaintext-length, and length-salt
-    /// bugs that a self-consistent seal/open pair would hide.
-    /// FORK DELTA (meow-vgate): made public so the server-side VMess inbound
-    /// can reuse the exact same AEAD open path that the golden vectors lock.
-    pub fn server_open_request_header(cmd_key: &[u8; 16], wire: &[u8]) -> Result<Vec<u8>, String> {
-        use aes_gcm::aead::{Aead, Payload};
-        let auth_id = &wire[0..16];
-        let encrypted_length = &wire[16..34]; // 2 + 16 tag
-        let conn_nonce = &wire[34..42]; // 8 bytes AFTER the length block
-        let encrypted_payload = &wire[42..];
-
-        let length_key = kdf16(
-            cmd_key,
-            &[b"VMess Header AEAD Key_Length", auth_id, conn_nonce],
-        );
-        let length_iv = kdf12(
-            cmd_key,
-            &[b"VMess Header AEAD Nonce_Length", auth_id, conn_nonce],
-        );
-        let len_cipher = Aes128Gcm::new_from_slice(&length_key).map_err(|e| e.to_string())?;
-        let len_pt = len_cipher
-            .decrypt(
-                Nonce::from_slice(&length_iv),
-                Payload {
-                    msg: encrypted_length,
-                    aad: auth_id,
-                },
-            )
-            .map_err(|_| "length AEAD open failed".to_string())?;
-        let l = u16::from_be_bytes([len_pt[0], len_pt[1]]) as usize;
-        if encrypted_payload.len() != l + 16 {
-            return Err(format!(
-                "payload len {} != L+16 ({})",
-                encrypted_payload.len(),
-                l + 16
-            ));
-        }
-
-        let header_key = kdf16(cmd_key, &[b"VMess Header AEAD Key", auth_id, conn_nonce]);
-        let header_iv = kdf12(cmd_key, &[b"VMess Header AEAD Nonce", auth_id, conn_nonce]);
-        let hdr_cipher = Aes128Gcm::new_from_slice(&header_key).map_err(|e| e.to_string())?;
-        let plaintext = hdr_cipher
-            .decrypt(
-                Nonce::from_slice(&header_iv),
-                Payload {
-                    msg: encrypted_payload,
-                    aad: auth_id,
-                },
-            )
-            .map_err(|_| "payload AEAD open failed".to_string())?;
-        if plaintext.len() != l {
-            return Err(format!("plaintext len {} != L {}", plaintext.len(), l));
-        }
-        Ok(plaintext)
     }
 
     fn sealed_headers_are_unique_and_server_openable() {
