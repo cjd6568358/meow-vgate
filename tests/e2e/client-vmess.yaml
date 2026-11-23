@@ -1,0 +1,29 @@
+# mihomo v1.19.34 as the client — same core as the phone's FlClash.
+# Connects to our meow-vgate VMess/mKCP server inbound on 19002.
+mixed-port: 17891
+mode: rule
+log-level: debug
+allow-lan: false
+ipv6: false
+
+dns:
+  enable: false
+
+proxies:
+  - name: vmess-out
+    type: vmess
+    server: 127.0.0.1
+    port: 19002
+    uuid: 00000000-0000-4000-8000-000000000002
+    alterId: 0
+    cipher: auto
+    network: kcp
+    kcp-opts:
+      mtu: 1350
+      tti: 20
+      uplink-capacity: 12
+      downlink-capacity: 10
+      congestion: bbr
+
+rules:
+  - MATCH,vmess-out

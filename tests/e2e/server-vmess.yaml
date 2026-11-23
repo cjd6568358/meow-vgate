@@ -1,0 +1,33 @@
+# meow-vgate server-inbound e2e: a VMess/mKCP inbound routing to direct.
+# Synthetic UUID only — no device credential.
+port: 0
+mode: direct
+log-level: debug
+allow-lan: false
+ipv6: false
+
+dns:
+  enable: false
+
+proxies:
+  - name: DIRECT
+    type: direct
+
+rules:
+  - MATCH,DIRECT
+
+listeners:
+  - name: vmess-in
+    type: vmess
+    listen: 127.0.0.1
+    port: 19002
+    users:
+      - uuid: 00000000-0000-4000-8000-000000000002
+        alterId: 0
+    mkcp-config:
+      enable: true
+      mtu: 1350
+      tti: 20
+      uplink-capacity: 12
+      downlink-capacity: 10
+      congestion: bbr

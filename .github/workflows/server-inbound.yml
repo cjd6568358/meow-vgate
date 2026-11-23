@@ -68,3 +68,28 @@ jobs:
 
       - name: Compile test (never run cross binaries)
         run: cargo check -p meow-app --features server-inbound --tests
+
+  e2e-vmess-mkcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build meow with server inbounds
+        run: cargo build -p meow-app --features server-inbound
+
+      - name: Download mihomo v1.19.34 (phone-side core)
+        run: |
+          curl -fsSL -o /tmp/mihomo.gz \
+            https://github.com/MetaCubeX/mihomo/releases/download/v1.19.34/mihomo-linux-amd64-v1.19.34.gz
+          gunzip -f /tmp/mihomo.gz
+          chmod +x /tmp/mihomo
+          /tmp/mihomo -v
+
+      - name: Run VMess/mKCP end-to-end
+        run: bash tests/e2e/vmess_mkcp_e2e.sh
