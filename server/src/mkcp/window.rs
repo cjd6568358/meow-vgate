@@ -241,6 +241,12 @@ impl SendingWindow {
         updated
     }
 
+    /// Advance the send cursor when a CMD segment reports peer's receive next.
+    pub fn process_receiving_next(&mut self, number: u32) {
+        self.clear(number);
+        self.find_first_unacknowledged();
+    }
+
     pub fn is_empty(&self) -> bool {
         self.window.is_empty()
     }

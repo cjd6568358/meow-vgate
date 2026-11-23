@@ -205,6 +205,11 @@ impl ReceivingWindow {
         self.window.contains_key(&self.next_number) || !self.left_over.is_empty()
     }
 
+    /// Drop queued ACKs below the peer's reported send cursor.
+    pub fn process_sending_next(&mut self, number: u32) {
+        self.ack_list.clear(number);
+    }
+
     /// Generate ACK segments to send. Returns (fields, close_option).
     pub fn flush_acks(&mut self, current: u32, rto: u32) -> Vec<(AckFields, u8)> {
         let next = self.next_number;
