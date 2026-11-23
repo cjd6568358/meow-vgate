@@ -6,11 +6,16 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use clap::Parser;
 use meow_server::config::{InboundConfig, DEFAULT_WS_PATH};
-use meow_server::listener::{serve_vless_ws, DiscardHandler};
+use meow_server::error::Result;
+use meow_server::listener::{serve_vless_ws, DiscardHandler, SessionHandler};
+use meow_server::stream::DynStream;
+use meow_server::vless::{Destination, VlessRequest, COMMAND_TCP};
 use meow_server::vmess;
-use tokio::net::TcpListener;
+use tokio::io::copy_bidirectional;
+use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
@@ -31,9 +36,41 @@ struct Args {
     #[arg(long, value_name = "UUID")]
     uuid: Vec<String>,
 
+    /// Relay accepted sessions to their destination over plain TCP instead
+    /// of discarding them (smoke-only end-to-end test mode).
+    #[arg(long, default_value_t = false)]
+    relay: bool,
+
     /// Accepted only to fail loudly: mKCP inbound is not implemented yet.
     #[arg(long, value_name = "ADDR")]
     vmess_mkcp: Option<SocketAddr>,
+}
+
+/// Smoke-only relay handler: opens the VLESS destination with a plain TCP
+/// socket and copies bytes both ways. This lets a real mihomo client verify
+/// "connect + data flows through" without needing the full client tunnel.
+struct RelayHandler;
+
+#[async_trait]
+impl SessionHandler for RelayHandler {
+    async fn handle(&self, request: VlessRequest, mut stream: DynStream) -> Result<()> {
+        if request.command != COMMAND_TCP {
+            return Err(meow_server::error::ServerError::UnsupportedCommand(
+                request.command,
+            ));
+        }
+        let host = match &request.destination {
+            Destination::Ip(ip) => ip.to_string(),
+            Destination::Domain(domain) => domain.clone(),
+        };
+        let target = format!("{host}:{}", request.port);
+        let mut upstream = TcpStream::connect(&target)
+            .await
+            .map_err(|e| std::io::Error::new(e.kind(), format!("connect {target}: {e}")))?;
+        let (sent, received) = copy_bidirectional(&mut stream, &mut upstream).await?;
+        eprintln!("relay {target}: {sent} bytes up, {received} bytes down");
+        Ok(())
+    }
 }
 
 #[tokio::main]
@@ -61,15 +98,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         users.len()
     );
 
-    serve_vless_ws(
-        listener,
-        InboundConfig {
-            listen: args.vless_ws,
-            ws_path: args.ws_path,
-        },
-        users,
-        Arc::new(DiscardHandler),
-    )
-    .await?;
+    let config = InboundConfig {
+        listen: args.vless_ws,
+        ws_path: args.ws_path,
+    };
+    if args.relay {
+        eprintln!("meow-server: relay mode enabled (plain TCP upstream)");
+        serve_vless_ws(listener, config, users, Arc::new(RelayHandler)).await?;
+    } else {
+        serve_vless_ws(listener, config, users, Arc::new(DiscardHandler)).await?;
+    }
     Ok(())
 }
