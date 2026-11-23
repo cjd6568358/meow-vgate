@@ -135,9 +135,12 @@ listeners:
     listen: 127.0.0.1
     port: 0
 "#;
-    let error = load_config_from_str(yaml)
-        .await
-        .expect_err("unknown listener type must be rejected");
+    // `Config` intentionally has no Debug impl, so `expect_err` cannot be
+    // used here (its Ok type must be Debug). Match the Err explicitly.
+    let error = match load_config_from_str(yaml).await {
+        Ok(_) => panic!("unknown listener type must be rejected"),
+        Err(error) => error,
+    };
     let message = format!("{error:#}");
     assert!(
         message.contains("unknown listener type 'trojan'"),
@@ -158,8 +161,9 @@ listeners:
     listen: 127.0.0.1
     port: 0
 "#;
-    let error = load_config_from_str(yaml)
-        .await
-        .expect_err("missing users must be rejected");
+    let error = match load_config_from_str(yaml).await {
+        Ok(_) => panic!("missing users must be rejected"),
+        Err(error) => error,
+    };
     assert!(format!("{error:#}").contains("listeners[empty-vless].users"));
 }
