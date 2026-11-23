@@ -1,9 +1,7 @@
 use md5::{Digest, Md5};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-#[cfg(test)]
-use super::header::response_body_keys;
-use super::header::Security;
+use super::header::{response_body_keys, Security};
 use crate::aead::{Aead, TAG_LEN};
 
 /// Maximum plaintext per body record (matching upstream 16 KiB - 16 tag).
