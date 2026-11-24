@@ -226,10 +226,12 @@ where
         let mut record = Vec::new();
         let mut writer = vmess_write;
         while let Ok(Some(())) = cipher.read_record_into(&mut kcp_read, &mut record).await {
+            tracing::debug!("vmess body: decrypted {} bytes -> tunnel", record.len());
             if writer.write_all(&record).await.is_err() {
                 break;
             }
         }
+        tracing::debug!("vmess body: inbound pump ended");
     });
 
     // Outbound: tunnel plaintext -> encrypted records -> KCP peer.
@@ -241,6 +243,7 @@ where
             match reader.read(&mut plain).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    tracing::debug!("vmess body: {n} bytes tunnel -> encrypted");
                     if cipher
                         .write_record(&mut kcp_write, &plain[..n])
                         .await
