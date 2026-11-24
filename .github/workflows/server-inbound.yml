@@ -175,3 +175,21 @@ jobs:
               exit 1
             fi
           fi
+
+      # First real aarch64-musl measurement of the single-process drop-in
+      # binary (ADR 0001 Migration 3). Informational only — no hard cap is
+      # set until the device owner signs off on the number.
+      - name: Build single-process aarch64-musl binary (server-inbound)
+        env:
+          CARGO_TARGET_DIR: target/device
+        run: |
+          cargo zigbuild --release --locked \
+            --features server-inbound \
+            --target "$TARGET" \
+            --bin meow
+
+      - name: Report single-process binary size
+        run: |
+          size=$(stat -c%s "target/device/$TARGET/release/meow")
+          echo "aarch64-musl single-process (server-inbound): $size bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::notice::device single-process binary $size bytes (no cap yet; ADR 0001)"
