@@ -29,7 +29,19 @@ upstream 之外，必须在本 fork 内永久自持。因此问题不是"怎么�
 | 2026-11-24 | `aarch64-unknown-linux-musl` **client minimal**（`--no-default-features --features minimal`） | **7,683,456 B** | 8 MiB cap 余量 705,152 B；sha3/Chunk-Masking 未撞线 |
 | 2026-11-24 | `aarch64-unknown-linux-musl` **full baseline**（默认 `full`，无 server-inbound） | **12,931,304 B** | 对照基准，同 profile/工具链 |
 | 2026-11-24 | `aarch64-unknown-linux-musl` **single-process `full + server-inbound`** | **13,086,672 B**（~12.5 MiB） | 机主终局目标二进制；cargo-zigbuild 0.23.2 + zig 0.13.0 |
+| 2026-11-24 | `armv7-unknown-linux-musleabihf` **single-process `full + server-inbound`** | **13,049,004 B**（~12.4 MiB） | 32-bit ARM 次级目标；专用容器脚本；`file` 实证静态 |
 | 2026-11-24 | **server-inbound delta（fair）** | **+155,368 B**（~152 KB） | 与 full baseline 同 feature 集合作差 |
+
+两个目标产物都由 CI 用 `file` 硬校验为 **`statically linked, stripped`**：
+- aarch64: `ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, stripped`
+- armv7hf: `ELF 32-bit LSB executable, ARM, EABI5 version 1 (SYSV), statically linked, stripped`
+
+armv7 用 `armv7-unknown-linux-musleabihf`（静态），**不是** `gnueabihf`（glibc 动态、
+需 GLIBC_2.28）。专用容器 `rust-musl-cross:armv7-musleabihf-amd64` + 脚本
+`scripts/build-armv7-musl.sh` 桥接 boring-sys 的 time64-vs-libc 冲突；脚本末尾的
+`file | grep statically linked` 是硬门槛，动态链接即失败。脚本新增的
+`MEOW_EXTRA_CARGO_ARGS`（默认空）仅为让 server-inbound feature 可编译，对 upstream
+client 发布构建零影响。
 
 ⚠️ **不要把 7,683,456（minimal）与 13,086,672（full+server）直接作差**：两者
 feature 集合不同，约 5.2 MiB 差额来自 `full` bundle 本身（hysteria2/quiche、
