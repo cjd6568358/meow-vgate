@@ -1,6 +1,6 @@
 # ADR 0001: Server-side footprint budget and workspace isolation
 
-- **Status:** Proposed — 隔离决策为现行约束；数值阈值待机主签字
+- **Status:** Proposed — 隔离决策为现行约束；实测已完成（2026-11-24），正式 cap 数值待机主签字
 - **Date:** 2026-11-23
 - **Author(s):** meow-vgate maintainers
 - **Supersedes:** —
@@ -10,8 +10,9 @@
 
 meow-rs 的 client 发布物在 `aarch64-unknown-linux-musl` 上有硬体积上限
 8 MiB（8,388,608 B），见 `docs/adr/0007-m2-footprint-budget.md:142` 和
-`.github/workflows/build.yml:93`。实测 client minimal binary 为 8,213,192 B，
-余量约 175 KB（~2%）。任何额外入站协议都足以撞线。
+`.github/workflows/build.yml:93`。历史实测 client minimal binary 为 8,213,192 B
+（余量约 175 KB）；2026-11-24 在当前分支工具链上复测为 7,683,456 B（余量 705 KB）。
+预算余量随工具链波动，必须每次在 CI 上实测而非引用旧数字。
 
 服务端入站（VLESS/VMess）对 client 用户毫无价值，却被 CONTRIBUTING.md:15-22 明确排除在
 upstream 之外，必须在本 fork 内永久自持。因此问题不是"怎么把 server 塞进现有预算"，
@@ -19,13 +20,18 @@ upstream 之外，必须在本 fork 内永久自持。因此问题不是"怎么�
 
 目标架构由机主指定为 `aarch64-unknown-linux-musl` 与 `armv7-unknown-linux-gnueabihf`。
 
-本机数据点（2026-11-23，GNU host 1.98.1，当前骨架）：
+实测数据点：
 
-| 构建 | stripped 体积 |
-|---|---|
-| `x86_64-pc-windows-gnu` release | 2,540,544 B（未 strip 3,815,785 B） |
+| 日期 | 构建 | stripped 体积 | 说明 |
+|---|---|---|---|
+| 2026-11-23 | `x86_64-pc-windows-gnu` server skeleton release | 2,540,544 B | Windows PE，仅说明依赖图规模可控 |
+| 2026-11-24 | `x86_64-pc-windows-gnu` server release (with profile) | 728,064 B | strip + opt-level=z 生效后的 PE |
+| 2026-11-24 | `aarch64-unknown-linux-musl` **client minimal**（`--no-default-features --features minimal`） | **7,683,456 B** | 8 MiB cap 余量 705,152 B；sha3/Chunk-Masking 未撞线 |
+| 2026-11-24 | `aarch64-unknown-linux-musl` **single-process `meow-app --features server-inbound`** | **13,085,328 B**（~12.5 MiB） | 机主终局目标二进制；cargo-zigbuild 0.23.2 + zig 0.13.0 |
 
-这是 Windows PE 数据，**不能**直接当 ARM 数据；仅说明当前依赖图规模可控。
+ARM 数值由 `server-inbound.yml` 的 `client-size` job 在 CI 上用真实交叉工具链测得
+（`cargo zigbuild --release --locked`，profile 与本节一致）。前两行是 Windows PE，
+**不能**当 ARM 数据；ARM 两行才是预算依据。
 
 ## Decision
 
@@ -72,11 +78,17 @@ stat -c '%s' target/aarch64-unknown-linux-musl/release/meow-server
 
 armv7hf 只做类型级 `cargo check`，不设体积 hard gate（无部署 cap 契约）。
 
-### 4. 临时阈值（待签字）
+### 4. 阈值（实测已得，正式 cap 待签字）
 
-在首次真实 aarch64-musl 测量完成前，采用 **4 MiB（4,194,304 B）stripped** 作为
-PR 侧警告线，不作为阻断门槛。测量后由机主签字确定正式 hard cap，再接入独立 CI job。
-该数值不与 client 的 8 MiB 共享，也不相加。
+早期骨架阶段曾用 4 MiB（4,194,304 B）作 PR 警告线。首次真实 aarch64-musl
+测量已完成（见 Context 表）：单进程 server-inbound 二进制为 **13,085,328 B**，
+因此 4 MiB 线已不适用，撤销。
+
+建议的正式 hard cap：**14 MiB（14,680,064 B）stripped**，相对当前 13,085,328 B
+留约 1.5 MiB（~12%）余量，容纳后续入站协议与 bugfix 增量。该 cap **仅作用于
+单进程 server-inbound 构建**，与 client 的 8 MiB cap 独立、不相加；尚未接入
+阻断 CI（当前 CI 只上报体积、不设 gate），**须机主签字后**才升级为 hard gate。
+armv7hf 仍只做类型级 `cargo check`，无部署 cap 契约。
 
 ## Consequences
 
@@ -110,17 +122,20 @@ PR 侧警告线，不作为阻断门槛。测量后由机主签字确定正式 h
 
 ## Migration
 
-1. 在 `server/Cargo.toml` 补 release profile（与根一致）。
-2. 在 CI 新增 server 专属 job：fmt、clippy `-D warnings`、rustdoc `-D warnings`、
-   `cargo test --all-targets`、两个 ARM 目标 `cargo check`。
-3. 配好 musl 交叉链接器后首次实测 aarch64 stripped 体积，把结果回填本 ADR。
-4. 机主签字确定正式 hard cap，把 4 MiB 警告线升级为阻断门槛。
+1. ✅ 在 `server/Cargo.toml` 补 release profile（与根一致）— 2026-11-24 完成。
+2. ✅ CI server 专属 job：fmt、clippy `-D warnings`、rustdoc `-D warnings`、
+   `cargo test --all-targets`、两个 ARM 目标 `cargo check` — 2026-11-24 完成。
+3. ✅ 首次实测 aarch64 stripped 体积并回填本 ADR — 2026-11-24 完成
+   （13,085,328 B 单进程；client minimal 7,683,456 B）。
+4. ⏳ 机主签字确定正式 hard cap（建议 14 MiB），把体积上报升级为阻断门槛。
 
 ## Open questions
 
-- 正式 aarch64-musl cap 数值：等待首次真实测量。
+- 正式 aarch64-musl cap 数值：实测 13,085,328 B，建议 14 MiB，待机主签字。
 - server 与 client 是分发为两个二进制，还是同一镜像内的两个进程？影响是否需要合并体积预算。
-- bridge 所需 C++ 交叉工具链由哪个 CI runner 提供（client release 矩阵已有 boringssl 构建能力，可复用）。
+- ~~bridge 所需 C++ 交叉工具链由哪个 CI runner 提供~~ — 已解决：`client-size` job
+  用 `cargo-zigbuild 0.23.2` + `zig 0.13.0`（与 build.yml 同 pin）成功构建单进程
+  aarch64-musl 二进制， boringssl 栈复用 client 同一套。
 
 ## References
 
