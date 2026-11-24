@@ -223,10 +223,49 @@ jobs:
 
       - name: Report single-process binary size + server delta
         run: |
+          BIN="target/device/$TARGET/release/meow"
+          file "$BIN" | tee -a "$GITHUB_STEP_SUMMARY"
+          file "$BIN" | grep -q 'statically linked' || {
+            echo "::error::aarch64 binary is not statically linked"; exit 1;
+          }
           base=$(stat -c%s "target/fullbase/$TARGET/release/meow")
-          dev=$(stat -c%s "target/device/$TARGET/release/meow")
+          dev=$(stat -c%s "$BIN")
           delta=$((dev - base))
           echo "aarch64-musl full baseline:     $base bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "aarch64-musl server-inbound:    $dev bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "server-inbound delta (fair):    $delta bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "::notice::device binary $dev bytes; fair server delta $delta bytes over full baseline $base"
+
+
+  # armv7hf STATIC artifact (32-bit ARM hard-float, musl). Not the glibc
+  # gnueabihf target (dynamically linked, needs GLIBC_2.28). Uses upstream's
+  # container toolchain because boring-sys hits a time64-vs-libc clash on
+  # 32-bit musl that the script bridges. The script ends with a hard
+  # `file | grep statically linked` guard — a dynamic binary fails the job.
+  armv7-static:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: armv7-unknown-linux-musleabihf
+      TOOLCHAIN_IMAGE: ghcr.io/rust-cross/rust-musl-cross:armv7-musleabihf-amd64@sha256:c2603200841eac1a6681d7beef44816c9954b0f59952ae7ae96652788287e16f
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build armv7hf static single-process binary in toolchain container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e MEOW_EXTRA_CARGO_ARGS="--features server-inbound" \
+            -v "$PWD:/src" -w /src \
+            "$TOOLCHAIN_IMAGE" bash scripts/build-armv7-musl.sh
+
+      - name: Verify static linkage and report size
+        run: |
+          BIN="target/$TARGET/release/meow"
+          file "$BIN" | tee -a "$GITHUB_STEP_SUMMARY"
+          file "$BIN" | grep -q 'statically linked' || {
+            echo "::error::armv7hf binary is not statically linked"; exit 1;
+          }
+          size=$(stat -c%s "$BIN")
+          echo "armv7hf static single-process: $size bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::notice::armv7hf static binary $size bytes (server-inbound, statically linked verified)"

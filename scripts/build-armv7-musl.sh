@@ -170,7 +170,11 @@ if [ "$locked_patched" -eq 0 ]; then
     exit 1
 fi
 
-cargo build --release --locked --target "$TARGET" --bin meow
+# FORK DELTA (meow-vgate): optional extra cargo args so the server-inbound
+# feature can be built for the device. Empty by default — upstream client
+# release builds are byte-for-byte unchanged.
+# shellcheck disable=SC2086
+cargo build --release --locked --target "$TARGET" --bin meow ${MEOW_EXTRA_CARGO_ARGS:-}
 
 # Hard guard against a regression that would ship a binary needing GLIBC_2.28:
 # that is the exact failure this target exists to avoid. Fails the build if
