@@ -426,4 +426,67 @@ mod tests {
         assert!(got.is_some());
         assert_eq!(&out, plaintext);
     }
+
+    #[tokio::test]
+    async fn full_wire_header_then_body_reads_at_correct_offset() {
+        // Reproduce the exact handler read sequence over a single contiguous
+        // byte stream: client writes header then body record, handler reads
+        // 42-byte prefix, computes frame_len, reads the rest of the header,
+        // then reads a body record. If body framing starts at the wrong
+        // offset, this fails (the mihomo e2e symptom).
+        let uuid = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x02,
+        ];
+        let key = cmd_key(&uuid);
+        let metadata = Metadata {
+            host: SmolStr::from("127.0.0.2"),
+            dst_port: 18099,
+            ..Default::default()
+        };
+        let sealed = meow_proxy::vmess::header::seal_request_header(
+            &key,
+            Security::Aes128Gcm,
+            &metadata,
+            false,
+        )
+        .unwrap();
+
+        // Client body record using the SAME req_key/req_iv from the header.
+        let mut wc = BodyCipher::new_writer(Security::Aes128Gcm, &sealed.req_key, &sealed.req_iv);
+        let mut body_wire = Vec::new();
+        wc.write_record(&mut body_wire, b"GET / HTTP/1.1\r\n\r\n")
+            .await
+            .unwrap();
+
+        // Contiguous stream: header || body.
+        let mut stream = sealed.bytes.clone();
+        stream.extend_from_slice(&body_wire);
+        let mut cursor = &stream[..];
+
+        // Handler step 1: 42-byte prefix.
+        let mut prefix = [0u8; 42];
+        cursor.read_exact(&mut prefix).await.unwrap();
+        let frame_len = meow_proxy::vmess::header::request_header_frame_len(&key, &prefix).unwrap();
+        // Handler step 2: rest of header.
+        let mut header = prefix.to_vec();
+        header.resize(frame_len, 0);
+        cursor.read_exact(&mut header[42..]).await.unwrap();
+        let req = authenticate(&[uuid], &header).unwrap();
+        assert_eq!(req.req_key, sealed.req_key);
+
+        // Handler step 3: body record from the remaining stream.
+        let mut server =
+            BodyCipher::new_server_full(Security::Aes128Gcm, &req.req_key, &req.req_iv);
+        let mut out = Vec::new();
+        let got = server
+            .read_record_into(&mut cursor, &mut out)
+            .await
+            .unwrap();
+        assert!(
+            got.is_some(),
+            "body record must be readable right after header"
+        );
+        assert_eq!(&out, b"GET / HTTP/1.1\r\n\r\n");
+    }
 }
