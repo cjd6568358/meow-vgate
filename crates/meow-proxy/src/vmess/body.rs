@@ -148,9 +148,13 @@ pub struct BodyCipher {
     /// fresh frame buffer.
     write_buf: Vec<u8>,
     /// FORK DELTA: SHAKE128 XOF that yields the per-record length mask when
-    /// the client requested Chunk Masking (option bit 0x04). Keyed by req_iv.
+    /// the client requested Chunk Masking (option bit 0x04). Read direction
+    /// keyed by req_iv, write direction keyed by resp_iv (sing-vmess:
+    /// service.go CreateWriter/Reader pass the direction's nonce).
     #[allow(clippy::type_complexity)]
     read_mask: Option<Box<dyn XofReader + Send>>,
+    #[allow(clippy::type_complexity)]
+    write_mask: Option<Box<dyn XofReader + Send>>,
 }
 
 /// Number of distinct nonces a u16 counter can produce. Mux logical flows
@@ -185,6 +189,7 @@ impl BodyCipher {
             read_counter: 0,
             write_buf: w.write_buf,
             read_mask: None,
+            write_mask: None,
         }
     }
 
@@ -203,6 +208,7 @@ impl BodyCipher {
             read_counter: 0,
             write_buf: Vec::new(),
             read_mask: None,
+            write_mask: None,
         }
     }
 
@@ -234,6 +240,7 @@ impl BodyCipher {
             read_counter: 0,
             write_buf: Vec::new(),
             read_mask: None,
+            write_mask: None,
         }
     }
 
@@ -256,23 +263,30 @@ impl BodyCipher {
             read_counter: 0,
             write_buf: Vec::new(),
             read_mask: None,
+            write_mask: None,
         }
     }
 
     /// FORK DELTA (meow-vgate): like [`Self::new_server_full`], but enables
-    /// Chunk Masking on the read direction — mihomo clients set VMess option
-    /// 0x04 by default, XORing each record's 2-byte length with a value
-    /// squeezed from SHAKE128 keyed by the 16-byte request IV.
+    /// Chunk Masking on both directions — mihomo clients set VMess option
+    /// 0x04 by default, XORing every record's 2-byte length with a value
+    /// squeezed from SHAKE128 keyed by the direction's IV: req_iv for reads,
+    /// resp_iv (SHA-256(req_iv)[:16]) for writes. Mirrors sing-vmess
+    /// service.go passing the same option to CreateReader and CreateWriter.
     #[allow(dead_code)]
     pub fn new_server_full_masked(
         security: Security,
         req_key: &[u8; 16],
         req_iv: &[u8; 16],
     ) -> Self {
-        let mut shake = Shake128::default();
-        shake.update(req_iv);
+        let mut rshake = Shake128::default();
+        rshake.update(req_iv);
+        let (_, resp_iv) = response_body_keys(req_key, req_iv);
+        let mut wshake = Shake128::default();
+        wshake.update(&resp_iv);
         Self {
-            read_mask: Some(Box::new(shake.finalize_xof())),
+            read_mask: Some(Box::new(rshake.finalize_xof())),
+            write_mask: Some(Box::new(wshake.finalize_xof())),
             ..Self::new_server_full(security, req_key, req_iv)
         }
     }
@@ -348,11 +362,22 @@ impl BodyCipher {
         // one write rather than a 2-byte length write and a body write.
         let len = u16::try_from(plaintext.len() + TAG_LEN)
             .map_err(|_| std::io::Error::other("vmess body record too large"))?;
+        // FORK DELTA: XOR the length with the response-direction SHAKE mask
+        // when Chunk Masking is enabled (client writes the same hash stream
+        // keyed by resp_iv to unmask our response records).
+        let wire_len = match self.write_mask.as_mut() {
+            Some(mask) => {
+                let mut hash_code = [0u8; 2];
+                mask.read(&mut hash_code);
+                len ^ u16::from_be_bytes(hash_code)
+            }
+            None => len,
+        };
         let nonce = self.write_nonce()?;
         let frame = &mut self.write_buf;
         frame.clear();
         frame.reserve(2 + usize::from(len));
-        frame.extend_from_slice(&len.to_be_bytes());
+        frame.extend_from_slice(&wire_len.to_be_bytes());
         frame.extend_from_slice(plaintext);
         frame.resize(2 + usize::from(len), 0);
         let (data, tag) = frame[2..].split_at_mut(plaintext.len());

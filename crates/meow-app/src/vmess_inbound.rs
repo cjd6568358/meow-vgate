@@ -270,7 +270,13 @@ where
 
     // Outbound: tunnel plaintext -> encrypted records -> KCP peer.
     let outbound = tokio::spawn(async move {
-        let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
+        // Response records carry the same Chunk Masking option; the writer
+        // mask is keyed by resp_iv so the client's SHAKE stream unmask aligns.
+        let mut cipher = if chunk_masking {
+            BodyCipher::new_server_full_masked(security, &req_key, &req_iv)
+        } else {
+            BodyCipher::new_server_full(security, &req_key, &req_iv)
+        };
         let mut reader = vmess_read;
         let mut plain = [0u8; 16 * 1024];
         loop {
