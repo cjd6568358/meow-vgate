@@ -227,10 +227,22 @@ where
         let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
         let mut record = Vec::new();
         let mut writer = vmess_write;
-        while let Ok(Some(())) = cipher.read_record_into(&mut kcp_read, &mut record).await {
-            tracing::debug!("vmess body: decrypted {} bytes -> tunnel", record.len());
-            if writer.write_all(&record).await.is_err() {
-                break;
+        loop {
+            match cipher.read_record_into(&mut kcp_read, &mut record).await {
+                Ok(Some(())) => {
+                    tracing::debug!("vmess body: decrypted {} bytes -> tunnel", record.len());
+                    if writer.write_all(&record).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    tracing::debug!("vmess body: clean terminator");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("vmess body: read_record error: {e}");
+                    break;
+                }
             }
         }
         tracing::debug!("vmess body: inbound pump ended");
