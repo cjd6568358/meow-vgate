@@ -28,6 +28,8 @@ const ADDR_DOMAIN: u8 = 0x02;
 const ADDR_IPV6: u8 = 0x03;
 const CMD_TCP: u8 = 0x01;
 const CMD_UDP: u8 = 0x02;
+const OPTION_CHUNK_STREAM: u8 = 0x01;
+const OPTION_CHUNK_MASKING: u8 = 0x04;
 
 /// Parsed VMess request header (plaintext after AEAD open).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +38,7 @@ pub struct VmessRequest {
     pub req_iv: [u8; 16],
     pub resp_v: u8,
     pub security: Security,
+    pub chunk_masking: bool,
     pub command: u8,
     pub dst_ip: Option<IpAddr>,
     pub host: String,
@@ -69,6 +72,11 @@ pub fn parse_plaintext_header(plain: &[u8]) -> Result<VmessRequest> {
         .try_into()
         .map_err(|_| anyhow!("short req_key"))?;
     let resp_v = plain[33];
+    let option = plain[34];
+    if option & OPTION_CHUNK_STREAM == 0 {
+        return Err(anyhow!("vmess chunk stream required (option={option:#x})"));
+    }
+    let chunk_masking = option & OPTION_CHUNK_MASKING != 0;
     let security = match plain[35] & 0x0f {
         0x03 => Security::Aes128Gcm,
         0x04 => Security::ChaCha20Poly1305,
@@ -111,6 +119,7 @@ pub fn parse_plaintext_header(plain: &[u8]) -> Result<VmessRequest> {
         req_iv,
         resp_v,
         security,
+        chunk_masking,
         command,
         dst_ip,
         host,
@@ -230,9 +239,14 @@ where
     let security = request.security;
     let req_key = request.req_key;
     let req_iv = request.req_iv;
+    let chunk_masking = request.chunk_masking;
     let inbound = tokio::spawn(async move {
-        tracing::debug!("vmess body: inbound pump started");
-        let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
+        tracing::debug!("vmess body: inbound pump started (masking={chunk_masking})");
+        let mut cipher = if chunk_masking {
+            BodyCipher::new_server_full_masked(security, &req_key, &req_iv)
+        } else {
+            BodyCipher::new_server_full(security, &req_key, &req_iv)
+        };
 
         let mut record = Vec::new();
         let mut writer = vmess_write;

@@ -1,4 +1,9 @@
 use md5::{Digest, Md5};
+// FORK DELTA (meow-vgate): SHAKE128 drives VMess chunk masking, which mihomo
+// enables by default (option 0x01|0x04). The length prefix of every body
+// record is XORed with 2 bytes squeezed from a SHAKE keyed by the request IV.
+use sha3::digest::{ExtendableOutput, Update, XofReader};
+use sha3::Shake128;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::header::{response_body_keys, Security};
@@ -142,6 +147,10 @@ pub struct BodyCipher {
     /// Reused by the write direction so every record does not allocate a
     /// fresh frame buffer.
     write_buf: Vec<u8>,
+    /// FORK DELTA: SHAKE128 XOF that yields the per-record length mask when
+    /// the client requested Chunk Masking (option bit 0x04). Keyed by req_iv.
+    #[allow(clippy::type_complexity)]
+    read_mask: Option<Box<dyn XofReader + Send>>,
 }
 
 /// Number of distinct nonces a u16 counter can produce. Mux logical flows
@@ -175,6 +184,7 @@ impl BodyCipher {
             write_counter: 0,
             read_counter: 0,
             write_buf: w.write_buf,
+            read_mask: None,
         }
     }
 
@@ -192,6 +202,7 @@ impl BodyCipher {
             write_counter: 0,
             read_counter: 0,
             write_buf: Vec::new(),
+            read_mask: None,
         }
     }
 
@@ -222,6 +233,7 @@ impl BodyCipher {
             write_counter: 0,
             read_counter: 0,
             write_buf: Vec::new(),
+            read_mask: None,
         }
     }
 
@@ -243,6 +255,25 @@ impl BodyCipher {
             write_counter: 0,
             read_counter: 0,
             write_buf: Vec::new(),
+            read_mask: None,
+        }
+    }
+
+    /// FORK DELTA (meow-vgate): like [`Self::new_server_full`], but enables
+    /// Chunk Masking on the read direction — mihomo clients set VMess option
+    /// 0x04 by default, XORing each record's 2-byte length with a value
+    /// squeezed from SHAKE128 keyed by the 16-byte request IV.
+    #[allow(dead_code)]
+    pub fn new_server_full_masked(
+        security: Security,
+        req_key: &[u8; 16],
+        req_iv: &[u8; 16],
+    ) -> Self {
+        let mut shake = Shake128::default();
+        shake.update(req_iv);
+        Self {
+            read_mask: Some(Box::new(shake.finalize_xof())),
+            ..Self::new_server_full(security, req_key, req_iv)
         }
     }
 
@@ -382,7 +413,16 @@ impl BodyCipher {
             }
             Err(e) => return Err(e),
         }
-        let len = u16::from_be_bytes(len_buf) as usize;
+        // FORK DELTA: undo VMess Chunk Masking length XOR when the client
+        // set option bit 0x04 (mihomo does by default). SHAKE128 was keyed
+        // with req_iv at construction; each record consumes 2 bytes.
+        let mut len_value = u16::from_be_bytes(len_buf);
+        if let Some(mask) = self.read_mask.as_mut() {
+            let mut hashCode = [0u8; 2];
+            mask.read(&mut hashCode);
+            len_value ^= u16::from_be_bytes(hashCode);
+        }
+        let len = len_value as usize;
         if len == 0 {
             // Explicit chunk-streaming terminator record.
             return Ok(None);

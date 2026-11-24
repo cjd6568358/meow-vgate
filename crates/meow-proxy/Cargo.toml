@@ -106,6 +106,7 @@ blake2 = { workspace = true, optional = true }
 shadowsocks = { workspace = true, optional = true }
 argon2 = { workspace = true, optional = true }
 sha2 = { workspace = true }
+sha3 = { workspace = true }
 hex = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
