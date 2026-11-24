@@ -266,7 +266,12 @@ fn send_segments(
         let mut plain = Vec::new();
         segment.serialize(&mut plain);
         let (sealed, wire) = auth::seal(security, &[], &plain);
-        let _ = socket.try_send_to(&sealed[..wire], peer);
+        // Never silently drop a send failure: a UDP sendto can fail on a
+        // constrained target (small socket buffer, address-family mismatch)
+        // and the peer then sees a hang with no server-side evidence.
+        if let Err(e) = socket.try_send_to(&sealed[..wire], peer) {
+            tracing::warn!("mkcp sendto {peer} failed: {e}");
+        }
     }
 }
 
