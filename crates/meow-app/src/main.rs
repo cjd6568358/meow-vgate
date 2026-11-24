@@ -1553,7 +1553,16 @@ async fn run(
                             m.tti.unwrap_or(0),
                             m.uplink_capacity.unwrap_or(0),
                             m.downlink_capacity.unwrap_or(0),
-                            m.read_buffer.unwrap_or(0).max(m.write_buffer.unwrap_or(0)),
+                            // mihomo's mkcp `read-buffer`/`write-buffer` are MiB:
+                            // the device config writes `4` (4 MiB), which KcpConfig
+                            // expects in bytes. Passing 4 directly made
+                            // sending_buffer_size = 4/mtu = 0 and froze the
+                            // response direction on the real device (verified
+                            // 2026-11-24: buffer 4 -> timeout, buffer 0 -> 200).
+                            m.read_buffer
+                                .unwrap_or(0)
+                                .max(m.write_buffer.unwrap_or(0))
+                                .saturating_mul(1024 * 1024),
                         )
                     });
                 let kcp_config = meow_server::mkcp::conn::KcpConfig::from_inbound(
