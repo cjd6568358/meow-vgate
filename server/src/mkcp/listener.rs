@@ -233,6 +233,7 @@ fn spawn_pump(conn: Arc<StdMutex<KcpConnection>>, mut pump_io: DuplexStream, tti
                     match read {
                         Ok(0) | Err(_) => break, // upper layer closed
                         Ok(n) => {
+                            tracing::debug!("mkcp pump: {n} bytes stream -> conn.write");
                             let mut guard = conn.lock().expect("kcp mutex poisoned");
                             guard.write(&inbound[..n]);
                         }
@@ -263,6 +264,9 @@ fn send_segments(
     peer: SocketAddr,
 ) {
     for segment in segments {
+        if matches!(segment, Segment::Data { .. } | Segment::Ack { .. }) {
+            tracing::debug!("mkcp send -> {peer}: {:?}", segment);
+        }
         let mut plain = Vec::new();
         segment.serialize(&mut plain);
         let (sealed, wire) = auth::seal(security, &[], &plain);
