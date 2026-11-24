@@ -225,6 +225,15 @@ where
     let inbound = tokio::spawn(async move {
         tracing::debug!("vmess body: inbound pump started");
         let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
+
+        // TEMP DIAG: peek the raw body framing before the codec consumes it.
+        let mut peek = [0u8; 4];
+        let got = kcp_read.read(&mut peek).await.unwrap_or(0);
+        tracing::warn!(
+            "vmess body DIAG: first read got {got} bytes: {:02x?}",
+            &peek[..got]
+        );
+
         let mut record = Vec::new();
         let mut writer = vmess_write;
         loop {

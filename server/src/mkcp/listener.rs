@@ -327,3 +327,31 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod split_probe_tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn duplex_split_after_partial_read_keeps_remainder() {
+        // Simulate spawn_pump -> KcpStream(duplex) -> VMess handler.
+        // `pump_io` is the pump's end; `stream` is the handler's end.
+        let (mut pump_io, mut stream) = tokio::io::duplex(4096);
+
+        // Pump writes header(109)+body(97)=206 bytes in one write_all.
+        let mut wire = vec![0u8; 109];
+        wire.extend_from_slice(&[0xAA; 97]);
+        pump_io.write_all(&wire).await.unwrap();
+
+        // Handler reads exactly the header (109 bytes) from its end.
+        let mut header = [0u8; 109];
+        stream.read_exact(&mut header).await.unwrap();
+
+        // Then splits the stream and reads the rest from the read half.
+        let (mut r, _w) = tokio::io::split(stream);
+        let mut rest = [0u8; 97];
+        let n = r.read(&mut rest).await.unwrap();
+        assert_eq!(n, 97, "split read half must see the 97 body bytes");
+        assert!(rest.iter().all(|&x| x == 0xAA));
+    }
+}
