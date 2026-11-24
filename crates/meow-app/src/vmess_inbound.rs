@@ -402,6 +402,17 @@ mod tests {
             false,
         )
         .expect("client seal");
+        // The frame length helper MUST return the exact header wire length,
+        // otherwise the handler reads too few/many bytes and body framing
+        // starts at the wrong offset (seen as garbage record lengths e2e).
+        let frame_len =
+            meow_proxy::vmess::header::request_header_frame_len(&key, &sealed.bytes[..42])
+                .expect("frame len");
+        assert_eq!(
+            frame_len,
+            sealed.bytes.len(),
+            "frame_len must equal full header wire length"
+        );
         let opened = authenticate(&[uuid], &sealed.bytes).expect("server must open client header");
         assert_eq!(opened.host, "example.com");
         assert_eq!(opened.port, 443);
@@ -414,8 +425,6 @@ mod tests {
 
     #[tokio::test]
     async fn body_cipher_client_seal_server_open_roundtrip() {
-        use tokio::io::AsyncWriteExt;
-
         let req_key = [0x20u8; 16];
         let req_iv = [0x10u8; 16];
         let plaintext = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
