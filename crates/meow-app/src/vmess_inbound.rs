@@ -209,6 +209,7 @@ where
     let mut relay = tokio::spawn(async move {
         let mut tunnel_side = tunnel_side;
         sink.relay(metadata, &mut tunnel_side).await;
+        tracing::debug!("vmess body: relay task finished");
     });
 
     // 5. Two independent pumps. VMess is full-duplex: the client may send a
@@ -222,6 +223,7 @@ where
     let req_key = request.req_key;
     let req_iv = request.req_iv;
     let inbound = tokio::spawn(async move {
+        tracing::debug!("vmess body: inbound pump started");
         let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
         let mut record = Vec::new();
         let mut writer = vmess_write;
@@ -257,10 +259,11 @@ where
     });
 
     // Keep the relay alive until either direction ends, then tear down.
+    tracing::debug!("vmess: entering select (frame_len={frame_len})");
     tokio::select! {
-        _ = &mut relay => {},
-        _ = inbound => {},
-        _ = outbound => {},
+        r = &mut relay => { tracing::debug!("vmess: select relay ended: {:?}", r); },
+        r = inbound => { tracing::debug!("vmess: select inbound ended: {:?}", r); },
+        r = outbound => { tracing::debug!("vmess: select outbound ended: {:?}", r); },
     }
     relay.abort();
     Ok(())
