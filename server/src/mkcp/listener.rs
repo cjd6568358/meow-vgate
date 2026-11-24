@@ -119,10 +119,15 @@ impl MkcpListener {
             return; // seed-based nonce framing not wired for this deployment
         }
         let Some(plain) = auth::open(&self.config.security, &[], data) else {
+            tracing::debug!(
+                "mkcp: auth open failed for {} bytes from {peer}",
+                data.len()
+            );
             return;
         };
         let segments = segment::parse_all(&plain);
         if segments.is_empty() {
+            tracing::debug!("mkcp: no segments parsed from {} plain bytes", plain.len());
             return;
         }
         let conv = segments[0].conv();
@@ -133,6 +138,11 @@ impl MkcpListener {
         let session = match sessions.entry(key) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
+                tracing::info!(
+                    "mkcp: new session conv={conv} cmd={:?} from {peer} ({} segments)",
+                    segments[0].command(),
+                    segments.len()
+                );
                 if segments[0].command() == segment::Command::Terminate {
                     return;
                 }

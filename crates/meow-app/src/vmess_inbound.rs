@@ -153,6 +153,7 @@ pub async fn handle_vmess_session<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    tracing::info!("vmess: session accepted, awaiting AEAD header");
     // 1. Read the fixed 42-byte AEAD header prefix (auth_id + sealed length +
     // conn_nonce). Try each configured user's cmd_key to decrypt the length.
     let mut prefix = [0u8; 42];
@@ -179,7 +180,15 @@ where
         .read_exact(&mut header[42..])
         .await
         .map_err(|e| anyhow!("vmess header payload read: {e}"))?;
-    let request = authenticate(&users, &header).ok_or_else(|| anyhow!("vmess auth failed"))?;
+    let request = authenticate(&users, &header).ok_or_else(|| {
+        tracing::warn!("vmess: auth failed for {} users", users.len());
+        anyhow!("vmess auth failed")
+    })?;
+    tracing::info!(
+        "vmess: authenticated {} -> {}:{}",
+        request.host,
+        request.port
+    );
     if request.command != CMD_TCP && request.command != CMD_UDP {
         return Err(anyhow!("unsupported vmess command: {}", request.command));
     }
