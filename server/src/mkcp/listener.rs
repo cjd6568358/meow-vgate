@@ -146,8 +146,12 @@ impl MkcpListener {
                 if segments[0].command() == segment::Command::Terminate {
                     return;
                 }
-                let connection =
-                    Arc::new(StdMutex::new(KcpConnection::new(self.config.kcp.clone())));
+                // The conversation ID comes from the first wire segment, not
+                // from config (which is conv=0 for a listener). Using 0 here
+                // would make KcpConnection::input reject every segment.
+                let mut kcp_config = self.config.kcp.clone();
+                kcp_config.conv = conv;
+                let connection = Arc::new(StdMutex::new(KcpConnection::new(kcp_config)));
                 let (client_io, pump_io) = tokio::io::duplex(64 * 1024);
                 spawn_pump(Arc::clone(&connection), pump_io, self.config.tti);
                 let _ = self.accepted_tx.try_send(KcpStream { io: client_io });
@@ -239,8 +243,11 @@ fn spawn_pump(conn: Arc<StdMutex<KcpConnection>>, mut pump_io: DuplexStream, tti
                         let mut guard = conn.lock().expect("kcp mutex poisoned");
                         guard.read(&mut outbound)
                     };
-                    if n > 0 && pump_io.write_all(&outbound[..n]).await.is_err() {
-                        break;
+                    if n > 0 {
+                        tracing::debug!("mkcp pump: {n} bytes -> stream");
+                        if pump_io.write_all(&outbound[..n]).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }
