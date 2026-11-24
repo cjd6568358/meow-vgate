@@ -27,11 +27,19 @@ upstream 之外，必须在本 fork 内永久自持。因此问题不是"怎么�
 | 2026-11-23 | `x86_64-pc-windows-gnu` server skeleton release | 2,540,544 B | Windows PE，仅说明依赖图规模可控 |
 | 2026-11-24 | `x86_64-pc-windows-gnu` server release (with profile) | 728,064 B | strip + opt-level=z 生效后的 PE |
 | 2026-11-24 | `aarch64-unknown-linux-musl` **client minimal**（`--no-default-features --features minimal`） | **7,683,456 B** | 8 MiB cap 余量 705,152 B；sha3/Chunk-Masking 未撞线 |
-| 2026-11-24 | `aarch64-unknown-linux-musl` **single-process `meow-app --features server-inbound`** | **13,085,328 B**（~12.5 MiB） | 机主终局目标二进制；cargo-zigbuild 0.23.2 + zig 0.13.0 |
+| 2026-11-24 | `aarch64-unknown-linux-musl` **full baseline**（默认 `full`，无 server-inbound） | **12,931,304 B** | 对照基准，同 profile/工具链 |
+| 2026-11-24 | `aarch64-unknown-linux-musl` **single-process `full + server-inbound`** | **13,086,672 B**（~12.5 MiB） | 机主终局目标二进制；cargo-zigbuild 0.23.2 + zig 0.13.0 |
+| 2026-11-24 | **server-inbound delta（fair）** | **+155,368 B**（~152 KB） | 与 full baseline 同 feature 集合作差 |
+
+⚠️ **不要把 7,683,456（minimal）与 13,086,672（full+server）直接作差**：两者
+feature 集合不同，约 5.2 MiB 差额来自 `full` bundle 本身（hysteria2/quiche、
+logbook/SQLite、public-suffix ~500 KB、anytls、kcptun、mux、多 listener 等），
+与 fork 的 server 代码无关。真正的 fork 成本是同基准作差的 **+155,368 B**,
+主要是 meow-server（VLESS/VMess 解析 + mKCP + WS）与 sha3（Chunk Masking）。
 
 ARM 数值由 `server-inbound.yml` 的 `client-size` job 在 CI 上用真实交叉工具链测得
 （`cargo zigbuild --release --locked`，profile 与本节一致）。前两行是 Windows PE，
-**不能**当 ARM 数据；ARM 两行才是预算依据。
+**不能**当 ARM 数据；ARM 行才是预算依据。
 
 ## Decision
 

@@ -53,7 +53,12 @@
 ### 3. meow-app 以 optional feature 接入
 
 - `meow-app` 增加 optional path dep：`meow-server = { path = "../../server", optional = true }`。
-- feature `server-inbound = ["meow-server/tunnel-bridge", "meow-config/server-inbound"]`。
+- feature `server-inbound = ["meow-config/server-inbound", "dep:meow-server"]`。
+- **实现注（2026-11-24）**：早期草案写的是 `meow-server/tunnel-bridge`，但落地时
+  `server/` 是纯协议库（VLESS/VMess 解析、mKCP、WS），没有也不需要 `tunnel-bridge`
+  feature；`meow-app/src/server_inbound.rs` 的 `RouteSink` 直接用 `meow_server::vless::*`
+  / `meow_server::mkcp::*` 协议类型，自己调 `meow_tunnel::route_inbound_tcp` 共享
+  `Arc<Tunnel>`。功能等价且 delta 更小（fair +155 KB），但文档以本行为准。
 - `listener_feature_gate` 与 listener match 各新增分支；spawn 时传 `tunnel.clone()`。
 - 默认 feature 不含 `server-inbound`，因此 8 MiB client cap 与默认发布物不受影响。
 
