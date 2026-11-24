@@ -269,3 +269,51 @@ jobs:
           size=$(stat -c%s "$BIN")
           echo "armv7hf static single-process: $size bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "::notice::armv7hf static binary $size bytes (server-inbound, statically linked verified)"
+
+  # Manual-only: build the deployable aarch64 STATIC single-process binary
+  # and upload it as an artifact. Normal pushes skip this (no CI time cost).
+  # Used to fetch the binary for on-device temporary testing.
+  publish-aarch64:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      TARGET: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read pinned toolchain channel
+        id: tc
+        run: |
+          tc=$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' rust-toolchain.toml | head -n1)
+          echo "channel=$tc" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.tc.outputs.channel }}
+          targets: ${{ env.TARGET }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: size-${{ env.TARGET }}-zigbuild-0.23.2
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+      - run: cargo install --locked cargo-zigbuild --version 0.23.2
+
+      - name: Build aarch64 static single-process binary
+        env:
+          CARGO_TARGET_DIR: target/device
+        run: |
+          cargo zigbuild --release --locked \
+            --features server-inbound \
+            --target "$TARGET" --bin meow
+          file "target/device/$TARGET/release/meow" | grep -q 'statically linked'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meow-vgate-aarch64-static
+          path: target/device/aarch64-unknown-linux-musl/release/meow
+          if-no-files-found: error
+          retention-days: 7
