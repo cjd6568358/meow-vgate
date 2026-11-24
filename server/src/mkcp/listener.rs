@@ -132,21 +132,6 @@ impl MkcpListener {
         }
         let conv = segments[0].conv();
         let key = session_key(peer, conv);
-        tracing::debug!(
-            "mkcp recv {} segments: {:?}",
-            segments.len(),
-            segments
-                .iter()
-                .map(|s| match s {
-                    Segment::Data {
-                        number, payload, ..
-                    } => format!("Data#{number}({})", payload.len()),
-                    Segment::Ack { numbers, .. } => format!("Ack{:?}", numbers),
-                    Segment::Command { command, .. } => format!("Cmd{command:?}"),
-                })
-                .collect::<Vec<_>>()
-        );
-
         let mut sessions = self.sessions.lock().await;
         use std::collections::hash_map::Entry;
         let session = match sessions.entry(key) {
@@ -278,9 +263,6 @@ fn send_segments(
     peer: SocketAddr,
 ) {
     for segment in segments {
-        if matches!(segment, Segment::Data { .. } | Segment::Ack { .. }) {
-            tracing::debug!("mkcp send -> {peer}: {:?}", segment);
-        }
         let mut plain = Vec::new();
         segment.serialize(&mut plain);
         let (sealed, wire) = auth::seal(security, &[], &plain);
