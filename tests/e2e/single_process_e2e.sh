@@ -7,7 +7,7 @@
 set -euo pipefail
 
 ROOT="${GITHUB_WORKSPACE:-$(pwd)}"
-MEOW="$ROOT/target/debug/meow"
+MEOW="${MEOW_BIN:-$ROOT/target/debug/meow}"
 MIHOMO="${MIHOMO_BIN:-/tmp/mihomo}"
 BOTH_CFG="$ROOT/tests/e2e/server-both.yaml"
 VLESS_CFG="$ROOT/tests/e2e/client-vless.yaml"

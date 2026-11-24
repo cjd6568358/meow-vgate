@@ -127,6 +127,23 @@ jobs:
       - name: Run single-process dual-inbound end-to-end
         run: bash tests/e2e/single_process_e2e.sh
 
+      # Verify the smaller device-tailored build is not just compilable but
+      # actually runs the drop-in path. Same features as the aarch64 size
+      # experiment in client-size; native Linux build so it can be executed.
+      - name: Build device-tailored meow (native, for e2e)
+        env:
+          CARGO_TARGET_DIR: target/tailored-native
+        run: |
+          cargo build -p meow-app \
+            --no-default-features \
+            --features "ss,trojan,vless,vless-vision,vless-encryption,vmess,hysteria2,dns-server,dns-encrypted,listener-http,listener-mixed,public-suffix,server-inbound" \
+            --bin meow
+
+      - name: Run dual-inbound e2e on device-tailored build
+        env:
+          MEOW_BIN: ${{ github.workspace }}/target/tailored-native/debug/meow
+        run: bash tests/e2e/single_process_e2e.sh
+
   # The server-inbound fork adds sha3 (VMess Chunk Masking) to meow-proxy,
   # which the client also links. test.yml's size job only runs on main/PRs,
   # so this branch would otherwise never verify the client's 8 MiB hard cap.
