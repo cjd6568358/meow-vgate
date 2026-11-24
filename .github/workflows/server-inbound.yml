@@ -111,6 +111,17 @@ jobs:
       - name: Run VMess/mKCP end-to-end
         run: bash tests/e2e/vmess_mkcp_e2e.sh
 
+      # 19001 VLESS/WS uses the standalone server bin (smoke relay), a
+      # different path from the meow-app server-inbound build above.
+      - name: Build VLESS/WS server bin
+        working-directory: server
+        run: cargo build --bin meow-server
+
+      - name: Run VLESS/WS end-to-end
+        env:
+          MEOW_SERVER_BIN: ${{ github.workspace }}/server/target/debug/meow-server
+        run: bash tests/e2e/vless_ws_e2e.sh
+
   # The server-inbound fork adds sha3 (VMess Chunk Masking) to meow-proxy,
   # which the client also links. test.yml's size job only runs on main/PRs,
   # so this branch would otherwise never verify the client's 8 MiB hard cap.

@@ -1,0 +1,28 @@
+# E2E-only: mihomo v1.19.34 client -> our VLESS/WS server on 19001.
+# Synthetic UUID; no real credentials. Mirrors the device-side vless+ws
+# listener contract (ws path /ws, no TLS) so the client needs zero edits.
+mixed-port: 17892
+mode: rule
+log-level: debug
+allow-lan: false
+ipv6: false
+
+proxies:
+  - name: test-vless
+    type: vless
+    server: 127.0.0.1
+    port: 19001
+    uuid: 00000000-0000-4000-8000-000000000001
+    network: ws
+    ws-opts:
+      path: /ws
+    tls: false
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - test-vless
+
+rules:
+  - MATCH,PROXY
