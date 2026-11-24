@@ -96,3 +96,68 @@ jobs:
 
       - name: Run VMess/mKCP end-to-end
         run: bash tests/e2e/vmess_mkcp_e2e.sh
+
+  # The server-inbound fork adds sha3 (VMess Chunk Masking) to meow-proxy,
+  # which the client also links. test.yml's size job only runs on main/PRs,
+  # so this branch would otherwise never verify the client's 8 MiB hard cap.
+  client-size:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read pinned toolchain channel
+        id: tc
+        run: |
+          tc=$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' rust-toolchain.toml | head -n1)
+          if [ -z "$tc" ]; then
+            echo "::error::could not parse channel from rust-toolchain.toml"
+            exit 1
+          fi
+          echo "channel=$tc" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.tc.outputs.channel }}
+          targets: ${{ env.TARGET }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: size-${{ env.TARGET }}-zigbuild-0.23.2
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - run: cargo install --locked cargo-zigbuild --version 0.23.2
+
+      - name: Build client minimal release binary
+        run: |
+          cargo zigbuild --release --locked \
+            --no-default-features --features minimal \
+            --target "$TARGET" \
+            --bin meow
+
+      - name: Client minimal binary size check (8 MiB hard cap)
+        run: |
+          read -r cap soft < <(awk -v t="$TARGET" '
+            $1 == "-" && $2 == "target:" { f = ($3 == t); next }
+            f && $1 == "minimal_budget_bytes:" { cap = $2 }
+            f && $1 == "minimal_soft_gate:" { soft = $2 }
+            END { print cap, soft }
+          ' .github/workflows/build.yml)
+          case "$cap" in
+            "" | 0 | *[!0-9]*) echo "::error::no cap for $TARGET"; exit 1 ;;
+          esac
+          size=$(stat -c%s "target/$TARGET/release/meow")
+          echo "$TARGET minimal: $size bytes, cap $cap bytes, headroom $((cap - size)) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$size" -gt "$cap" ]; then
+            if [ "$soft" = "true" ]; then
+              echo "::warning::$TARGET minimal binary $size bytes exceeds soft budget $cap bytes"
+            else
+              echo "::error::$TARGET minimal binary $size bytes exceeds hard budget by $((size - cap)) bytes"
+              exit 1
+            fi
+          fi
