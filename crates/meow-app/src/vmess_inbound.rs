@@ -185,7 +185,8 @@ where
         anyhow!("vmess auth failed")
     })?;
     tracing::info!(
-        "vmess: authenticated {} -> {}:{}",
+        "vmess: authenticated cmd={} -> {}:{}",
+        request.command,
         request.host,
         request.port
     );
