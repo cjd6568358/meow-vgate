@@ -192,6 +192,23 @@ jobs:
             fi
           fi
 
+      # Fair baseline: SAME default `full` bundle + profile + toolchain,
+      # WITHOUT server-inbound. The delta against the next step is the real
+      # cost of the fork's server code (minimal bundle is a different feature
+      # set and must not be compared against it).
+      - name: Build full baseline (no server-inbound)
+        env:
+          CARGO_TARGET_DIR: target/fullbase
+        run: |
+          cargo zigbuild --release --locked \
+            --target "$TARGET" \
+            --bin meow
+
+      - name: Report full baseline size
+        run: |
+          size=$(stat -c%s "target/fullbase/$TARGET/release/meow")
+          echo "aarch64-musl full baseline: $size bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+
       # First real aarch64-musl measurement of the single-process drop-in
       # binary (ADR 0001 Migration 3). Informational only — no hard cap is
       # set until the device owner signs off on the number.
@@ -204,8 +221,12 @@ jobs:
             --target "$TARGET" \
             --bin meow
 
-      - name: Report single-process binary size
+      - name: Report single-process binary size + server delta
         run: |
-          size=$(stat -c%s "target/device/$TARGET/release/meow")
-          echo "aarch64-musl single-process (server-inbound): $size bytes" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "::notice::device single-process binary $size bytes (no cap yet; ADR 0001)"
+          base=$(stat -c%s "target/fullbase/$TARGET/release/meow")
+          dev=$(stat -c%s "target/device/$TARGET/release/meow")
+          delta=$((dev - base))
+          echo "aarch64-musl full baseline:     $base bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "aarch64-musl server-inbound:    $dev bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "server-inbound delta (fair):    $delta bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::notice::device binary $dev bytes; fair server delta $delta bytes over full baseline $base"
