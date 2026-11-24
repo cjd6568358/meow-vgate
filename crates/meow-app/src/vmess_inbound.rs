@@ -226,43 +226,12 @@ where
         tracing::debug!("vmess body: inbound pump started");
         let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
 
-        let mut record = Vec::new();
-        let mut writer = vmess_write;
-        loop {
-            let mut len_buf = [0u8; 2];
-            match kcp_read.read(&mut len_buf).await {
-                Ok(0) => {
-                    tracing::warn!("vmess DIAG: EOF at framing");
-                    break;
-                }
-                Ok(n) => {
-                    if n < 2 && kcp_read.read_exact(&mut len_buf[n..]).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("vmess DIAG: framing read err {e}");
-                    break;
-                }
-            }
-            let len = u16::from_be_bytes(len_buf) as usize;
-            tracing::warn!("vmess DIAG: record len={len}");
-            if len == 0 || len > 65535 {
-                break;
-            }
-            record.resize(len, 0);
-            if kcp_read.read_exact(&mut record).await.is_err() {
-                tracing::warn!("vmess DIAG: payload read_exact({len}) failed");
-                break;
-            }
-            tracing::warn!(
-                "vmess DIAG: got {len} bytes first={:02x?}",
-                &record[..4.min(len)]
-            );
-            if writer.write_all(&record).await.is_err() {
-                break;
-            }
-        }
+        let mut dump = vec![0u8; 4096];
+        let dn = kcp_read.read(&mut dump).await.unwrap_or(0);
+        tracing::warn!(
+            "vmess DIAG: remaining {dn} bytes = {:02x?}",
+            &dump[..dn.min(130)]
+        );
         let _ = &mut cipher;
         tracing::debug!("vmess body: inbound pump ended");
     });
