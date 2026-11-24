@@ -89,10 +89,10 @@ pub struct KcpConnection {
     sending: SendingWindow,
     receiving: ReceivingWindow,
     output: Vec<Segment>,
-    /// Whether the time baseline has been set from the first observed packet.
-    /// Until then, comparisons against last_incoming (initialized to 0) would
-    /// see an epoch-millisecond `current` as a 30s+ timeout and close at once.
-    clock_started: bool,
+    /// Epoch-ms value observed on first input/tick; all internal clocks are
+    /// relative to this so segment timeouts and RTT checks match Go's
+    /// small `elapsed()` values. `None` until the first observation.
+    clock_epoch_base: Option<u32>,
 }
 
 impl KcpConnection {
@@ -115,7 +115,7 @@ impl KcpConnection {
             sending,
             receiving,
             output: Vec::new(),
-            clock_started: false,
+            clock_epoch_base: None,
         }
     }
 
@@ -146,18 +146,18 @@ impl KcpConnection {
         }
     }
 
-    /// Feed one parsed datagram's segments into the connection.
-    fn init_clock(&mut self, current: u32) {
-        if !self.clock_started {
-            self.state_begin = current;
-            self.last_incoming = current;
-            self.last_ping = current;
-            self.clock_started = true;
-        }
+    /// Convert an epoch-millisecond timestamp into a small relative clock.
+    /// Go's KCP uses `elapsed()` (ms since connection start); passing raw
+    /// epoch-ms breaks the retransmit check `current - timeout >= HALF`,
+    /// because a fresh segment's `timeout == 0` then looks "in the future"
+    /// and every send is skipped. We pin a baseline on first use instead.
+    fn init_clock(&mut self, epoch_ms: u32) -> u32 {
+        let base = *self.clock_epoch_base.get_or_insert(epoch_ms);
+        epoch_ms.wrapping_sub(base)
     }
 
-    pub fn input(&mut self, segments: &[Segment], current: u32) {
-        self.init_clock(current);
+    pub fn input(&mut self, segments: &[Segment], epoch_ms: u32) {
+        let current = self.init_clock(epoch_ms);
         self.last_incoming = current;
         for segment in segments {
             if segment.conv() != self.config.conv {
@@ -266,8 +266,8 @@ impl KcpConnection {
 
     /// Advance the state machine and produce outgoing segments. Called on a
     /// TTI timer by the listener. Returns segments to send as UDP datagrams.
-    pub fn tick(&mut self, current: u32) -> Vec<Segment> {
-        self.init_clock(current);
+    pub fn tick(&mut self, epoch_ms: u32) -> Vec<Segment> {
+        let current = self.init_clock(epoch_ms);
         self.output.clear();
         if self.state == State::Terminated {
             return Vec::new();
@@ -387,7 +387,9 @@ mod tests {
     fn bidirectional_exchange_with_epoch_timestamps() {
         // Use epoch-millis-like timestamps (the listener passes now_millis()).
         // Small test timestamps (1000/1010) can hide wrapping-time bugs.
-        let t0: u32 = 0x1C45_0000; // ~ current epoch-ms truncated to u32
+        // Real epoch-ms truncated to u32 is > HALF (0x7FFF_FFFF) in 2026;
+        // the connection must convert it to a relative clock internally.
+        let t0: u32 = 0xB296_8400;
         let mut a = KcpConnection::new(config(7));
         let mut b = KcpConnection::new(config(7));
 
