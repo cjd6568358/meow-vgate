@@ -48,6 +48,14 @@ pub struct VmessRequest {
 /// [35]=padding<<4|security [36]=0 [37]=cmd [38..40]=port BE [40]=atype
 /// [41..]=addr [..]=padding [last4]=FNV1a32`.
 pub fn parse_plaintext_header(plain: &[u8]) -> Result<VmessRequest> {
+    tracing::debug!(
+        "vmess plain header: len={} ver={} opt={:#04x} psec={:#04x} cmd={}",
+        plain.len(),
+        plain[0],
+        plain[34],
+        plain[35],
+        plain[37]
+    );
     if plain.len() < 42 {
         return Err(anyhow!("vmess header too short: {}", plain.len()));
     }
