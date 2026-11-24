@@ -40,19 +40,23 @@ if ! kill -0 "$CLIENT_PID" 2>/dev/null; then
 fi
 
 # 3. Request through the client; must traverse our VMess/mKCP server.
-# Use a FIXED public IP (Cloudflare 1.1.1.1) with no Host override so the
-# upstream tunnel routes by IP and needs no DNS — CI runners may block
-# external DNS, which is unrelated to the server-inbound implementation.
-# Any HTTP response (even 400) proves the full double-direction chain works.
-echo "=== curl via VMess/mKCP chain (target 1.1.1.1) ==="
+# Use a LOCAL http server on 127.0.0.2 (not 127.0.0.1, which mihomo treats
+# as an immediate direct-connect bypass). This avoids CI external-network
+# restrictions entirely — a non-000 HTTP code proves bytes flowed through
+# mihomo -> our mKCP/VMess server -> direct outbound and back.
+python3 -m http.server 18099 --bind 0.0.0.0 >/tmp/meow-http-e2e.log 2>&1 &
+HTTP_PID=$!
+sleep 1
+echo "=== curl via VMess/mKCP chain (target 127.0.0.2:18099) ==="
 set +e
 HTTP_CODE="$(curl -sS --max-time 25 \
   --proxy http://127.0.0.1:17891 \
-  "http://1.1.1.1/" \
+  "http://127.0.0.2:18099/" \
   -o /dev/null \
   -w '%{http_code}')"
 CURL_STATUS=$?
 set -e
+kill "$HTTP_PID" 2>/dev/null || true
 echo "HTTP=$HTTP_CODE"
 # 1.1.1.1 answers plain HTTP with 400; any non-zero code means bytes flowed
 # through mihomo -> our mKCP/VMess server -> direct outbound and back.
