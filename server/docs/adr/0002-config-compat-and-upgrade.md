@@ -125,8 +125,16 @@
 
 ## Open questions
 
-- 设备单进程组合二进制的总体积上限（flash 余量以实采为准）。
-- `mkcp-config` 字段是否全部逐项生效，还是先覆盖现役取值集合。
+- 设备单进程组合二进制的总体积上限（flash 余量以实采为准）。aarch64-musl 与
+  armv7hf-musl 两个静态 stripped 产物均已实测（见 ADR 0001），正式 cap 待签字。
+- ~~`mkcp-config` 字段是否全部逐项生效~~ — 2026-11-24 真机验证：现役取值集合
+  （mtu/tti/capacity/buffer/congestion）全部能解析并加载；其中发现并修复了
+  **buffer 单位 bug**：mihomo 的 `read-buffer`/`write-buffer` 是 MiB，我们曾当字节
+  传入 KcpConfig，导致 `sending_buffer_size = 4/1250 = 0`、mKCP 响应发不出去
+  （真机 curl 超时，CI 因测试配置 buffer 组合不同而未暴露）。已在 meow-app 传入时
+  `saturating_mul(1024*1024)`，真机用原 config（buffer=4 不改）验证 VMess/mKCP HTTP 200。
+  `congestion` 目前仍只解析不接入 KCP 状态机（我们的实现无 BBR 开关），属已知
+  Class B 分歧，不影响连通性。
 - 升级节奏：跟每个 upstream tag，还是选定版本。
 
 ## References
