@@ -122,6 +122,11 @@ jobs:
           MEOW_SERVER_BIN: ${{ github.workspace }}/server/target/debug/meow-server
         run: bash tests/e2e/vless_ws_e2e.sh
 
+      # ADR 0002 core goal: one meow process, one config.yaml, BOTH inbounds
+      # sharing one Arc<Tunnel> — the actual drop-in replacement path.
+      - name: Run single-process dual-inbound end-to-end
+        run: bash tests/e2e/single_process_e2e.sh
+
   # The server-inbound fork adds sha3 (VMess Chunk Masking) to meow-proxy,
   # which the client also links. test.yml's size job only runs on main/PRs,
   # so this branch would otherwise never verify the client's 8 MiB hard cap.
