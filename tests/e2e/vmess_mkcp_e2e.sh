@@ -40,11 +40,19 @@ if ! kill -0 "$CLIENT_PID" 2>/dev/null; then
 fi
 
 # 3. Request through the client; must traverse our VMess/mKCP server.
-echo "=== curl via VMess/mKCP chain ==="
+# Use a numeric IP so the upstream tunnel does not need DNS (CI runners may
+# block external DNS); Host header keeps httpbin serving the right vhost.
+TARGET_IP="$(getent ahostsv4 httpbin.org | head -1 | awk '{print $1}')"
+if [ -z "$TARGET_IP" ]; then
+  echo "could not resolve httpbin.org locally" >&2
+  exit 1
+fi
+echo "=== curl via VMess/mKCP chain (target $TARGET_IP) ==="
 set +e
 curl -fsS --max-time 25 \
   --proxy http://127.0.0.1:17891 \
-  "http://httpbin.org/get?e2e=vmess-mkcp" \
+  -H "Host: httpbin.org" \
+  "http://${TARGET_IP}/get?e2e=vmess-mkcp" \
   -w '\nHTTP=%{http_code}\n'
 CURL_STATUS=$?
 set -e
