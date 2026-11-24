@@ -287,6 +287,13 @@ jobs:
           fi
           echo "armv7hf cap: $CAP bytes, headroom $((CAP - size)) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meow-vgate-v0.29.0-armv7hf-linux-musl
+          path: target/armv7-unknown-linux-musleabihf/release/meow
+          if-no-files-found: error
+          retention-days: 7
+
   # Manual-only: build the deployable aarch64 STATIC single-process binary
   # and upload it as an artifact. Normal pushes skip this (no CI time cost).
   # Used to fetch the binary for on-device temporary testing.
@@ -330,7 +337,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: meow-vgate-aarch64-static
+          name: meow-vgate-v0.29.0-aarch64-linux-musl
           path: target/device/aarch64-unknown-linux-musl/release/meow
           if-no-files-found: error
           retention-days: 7
