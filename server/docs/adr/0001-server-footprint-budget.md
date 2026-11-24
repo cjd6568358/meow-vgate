@@ -1,6 +1,6 @@
 # ADR 0001: Server-side footprint budget and workspace isolation
 
-- **Status:** Proposed — 隔离决策为现行约束；实测已完成（2026-11-24），正式 cap 数值待机主签字
+- **Status:** Accepted — 机主 2026-11-24 签字确认 14 MiB 正式 hard cap（两个静态产物共用）
 - **Date:** 2026-11-23
 - **Author(s):** meow-vgate maintainers
 - **Supersedes:** —
@@ -98,17 +98,25 @@ stat -c '%s' target/aarch64-unknown-linux-musl/release/meow-server
 
 armv7hf 只做类型级 `cargo check`，不设体积 hard gate（无部署 cap 契约）。
 
-### 4. 阈值（实测已得，正式 cap 待签字）
+### 4. 阈值（已签字生效）
 
-早期骨架阶段曾用 4 MiB（4,194,304 B）作 PR 警告线。首次真实 aarch64-musl
-测量已完成（见 Context 表）：单进程 server-inbound 二进制为 **13,085,328 B**，
-因此 4 MiB 线已不适用，撤销。
+早期骨架阶段曾用 4 MiB（4,194,304 B）作 PR 警告线，首次真实测量后撤销。
 
-建议的正式 hard cap：**14 MiB（14,680,064 B）stripped**，相对当前 13,085,328 B
-留约 1.5 MiB（~12%）余量，容纳后续入站协议与 bugfix 增量。该 cap **仅作用于
-单进程 server-inbound 构建**，与 client 的 8 MiB cap 独立、不相加；尚未接入
-阻断 CI（当前 CI 只上报体积、不设 gate），**须机主签字后**才升级为 hard gate。
-armv7hf 仍只做类型级 `cargo check`，无部署 cap 契约。
+正式 hard cap：**14 MiB（14,680,064 B）stripped** —— 机主 2026-11-24 签字确认。
+该 cap 作用于**单进程 server-inbound 静态产物**，两个目标架构共用：
+
+| 目标 | 实测 stripped | 余量 |
+|---|---|---|
+| aarch64-musl | 13,086,672 B | 1,593,392 B |
+| armv7-musleabihf | 13,049,004 B | 1,631,060 B |
+
+余量约 1.5 MiB（~12%），容纳后续入站协议与 bugfix 增量。该 cap 与 client 的
+8 MiB cap **独立、不相加**；client 的 cap 只管默认 minimal 发布物，本 cap 只管
+带 `server-inbound` feature 的设备单进程产物。
+
+**已接入阻断 CI**：`server-inbound.yml` 的 `client-size`（aarch64）与
+`armv7-static` job 都在报体积后做 `size > 14680064 → exit 1`，超线即红。
+`file | grep statically linked` 同样是硬门槛，动态链接直接失败。
 
 ## Consequences
 
@@ -147,11 +155,11 @@ armv7hf 仍只做类型级 `cargo check`，无部署 cap 契约。
    `cargo test --all-targets`、两个 ARM 目标 `cargo check` — 2026-11-24 完成。
 3. ✅ 首次实测 aarch64 stripped 体积并回填本 ADR — 2026-11-24 完成
    （13,085,328 B 单进程；client minimal 7,683,456 B）。
-4. ⏳ 机主签字确定正式 hard cap（建议 14 MiB），把体积上报升级为阻断门槛。
+4. ✅ 机主 2026-11-24 签字确认 14 MiB hard cap，两个静态产物的体积上报已升级为阻断门槛。
 
 ## Open questions
 
-- 正式 aarch64-musl cap 数值：实测 13,085,328 B，建议 14 MiB，待机主签字。
+- ~~正式 cap 数值~~ — 2026-11-24 机主签字定为 14 MiB（14,680,064 B），两个静态产物共用，已接入阻断 CI。
 - server 与 client 是分发为两个二进制，还是同一镜像内的两个进程？影响是否需要合并体积预算。
 - ~~bridge 所需 C++ 交叉工具链由哪个 CI runner 提供~~ — 已解决：`client-size` job
   用 `cargo-zigbuild 0.23.2` + `zig 0.13.0`（与 build.yml 同 pin）成功构建单进程

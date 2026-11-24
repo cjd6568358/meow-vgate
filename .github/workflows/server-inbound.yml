@@ -236,6 +236,16 @@ jobs:
           echo "server-inbound delta (fair):    $delta bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "::notice::device binary $dev bytes; fair server delta $delta bytes over full baseline $base"
 
+          # Hard cap signed off by the device owner (ADR 0001 §4): 14 MiB.
+          # Independent of the client's 8 MiB cap (different feature set);
+          # not additive. Measured 13,086,672 B leaves ~1.5 MiB headroom.
+          CAP=14680064
+          if [ "$dev" -gt "$CAP" ]; then
+            echo "::error::aarch64 single-process binary $dev bytes exceeds hard cap $CAP bytes by $((dev - CAP)) bytes (ADR 0001)"
+            exit 1
+          fi
+          echo "aarch64 single-process cap:     $CAP bytes, headroom $((CAP - dev)) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+
 
   # armv7hf STATIC artifact (32-bit ARM hard-float, musl). Not the glibc
   # gnueabihf target (dynamically linked, needs GLIBC_2.28). Uses upstream's
@@ -269,6 +279,13 @@ jobs:
           size=$(stat -c%s "$BIN")
           echo "armv7hf static single-process: $size bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "::notice::armv7hf static binary $size bytes (server-inbound, statically linked verified)"
+          # Same signed-off 14 MiB hard cap as aarch64 (ADR 0001 §4).
+          CAP=14680064
+          if [ "$size" -gt "$CAP" ]; then
+            echo "::error::armv7hf binary $size bytes exceeds hard cap $CAP bytes by $((size - CAP)) bytes (ADR 0001)"
+            exit 1
+          fi
+          echo "armv7hf cap: $CAP bytes, headroom $((CAP - size)) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Manual-only: build the deployable aarch64 STATIC single-process binary
   # and upload it as an artifact. Normal pushes skip this (no CI time cost).
