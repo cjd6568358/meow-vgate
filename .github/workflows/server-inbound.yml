@@ -192,6 +192,28 @@ jobs:
             fi
           fi
 
+      # Experiment: a device-tailored feature set. Read from the real
+      # config.yaml (types trojan/hysteria2/vless/vmess, groups incl.
+      # load-balance; no logbook/ledger/snell/anytls/mux/kcptun/tun/ss-listener).
+      # Keeps public-suffix (consistent-hashing used) and server-inbound.
+      # No source changes — pure Cargo feature selection. If it compiles and
+      # the device config still loads, this is a smaller drop-in candidate.
+      - name: Build device-tailored feature set (experiment)
+        env:
+          CARGO_TARGET_DIR: target/tailored
+        run: |
+          cargo zigbuild --release --locked \
+            --no-default-features \
+            --features "ss,trojan,vless,vless-vision,vless-encryption,vmess,hysteria2,dns-server,dns-encrypted,listener-http,listener-mixed,public-suffix,server-inbound" \
+            --target "$TARGET" \
+            --bin meow
+
+      - name: Report device-tailored size
+        run: |
+          size=$(stat -c%s "target/tailored/$TARGET/release/meow")
+          echo "aarch64-musl device-tailored: $size bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::notice::device-tailored binary $size bytes (feature experiment, not shipped)"
+
       # Fair baseline: SAME default `full` bundle + profile + toolchain,
       # WITHOUT server-inbound. The delta against the next step is the real
       # cost of the fork's server code (minimal bundle is a different feature
