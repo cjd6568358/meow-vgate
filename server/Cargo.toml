@@ -48,3 +48,12 @@ sha2 = "0.10"
 uuid = "1"
 
 [dev-dependencies]
+
+# Match the root workspace's release profile (ADR 0001 Migration step 1).
+# This is a standalone workspace, so it does not inherit the root profile.
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
+opt-level = "z"
