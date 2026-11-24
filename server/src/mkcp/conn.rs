@@ -89,6 +89,10 @@ pub struct KcpConnection {
     sending: SendingWindow,
     receiving: ReceivingWindow,
     output: Vec<Segment>,
+    /// Whether the time baseline has been set from the first observed packet.
+    /// Until then, comparisons against last_incoming (initialized to 0) would
+    /// see an epoch-millisecond `current` as a 30s+ timeout and close at once.
+    clock_started: bool,
 }
 
 impl KcpConnection {
@@ -111,6 +115,7 @@ impl KcpConnection {
             sending,
             receiving,
             output: Vec::new(),
+            clock_started: false,
         }
     }
 
@@ -142,7 +147,17 @@ impl KcpConnection {
     }
 
     /// Feed one parsed datagram's segments into the connection.
+    fn init_clock(&mut self, current: u32) {
+        if !self.clock_started {
+            self.state_begin = current;
+            self.last_incoming = current;
+            self.last_ping = current;
+            self.clock_started = true;
+        }
+    }
+
     pub fn input(&mut self, segments: &[Segment], current: u32) {
+        self.init_clock(current);
         self.last_incoming = current;
         for segment in segments {
             if segment.conv() != self.config.conv {
@@ -252,6 +267,7 @@ impl KcpConnection {
     /// Advance the state machine and produce outgoing segments. Called on a
     /// TTI timer by the listener. Returns segments to send as UDP datagrams.
     pub fn tick(&mut self, current: u32) -> Vec<Segment> {
+        self.init_clock(current);
         self.output.clear();
         if self.state == State::Terminated {
             return Vec::new();
@@ -365,6 +381,33 @@ mod tests {
         let acks = b.tick(1010);
         a.input(&acks, 1010);
         assert!(a.sending.is_empty());
+    }
+
+    #[test]
+    fn bidirectional_exchange_with_epoch_timestamps() {
+        // Use epoch-millis-like timestamps (the listener passes now_millis()).
+        // Small test timestamps (1000/1010) can hide wrapping-time bugs.
+        let t0: u32 = 0x1C45_0000; // ~ current epoch-ms truncated to u32
+        let mut a = KcpConnection::new(config(7));
+        let mut b = KcpConnection::new(config(7));
+
+        // A -> B request.
+        a.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        let to_b = a.tick(t0);
+        assert!(!to_b.is_empty(), "A must emit request segments");
+        b.input(&to_b, t0 + 1);
+        let mut req = [0u8; 128];
+        let n = b.read(&mut req);
+        assert_eq!(&req[..n], b"GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+
+        // B -> A response (this is what the e2e stalls on).
+        b.write(b"HTTP/1.1 200 OK\r\n\r\nbody");
+        let to_a = b.tick(t0 + 2);
+        assert!(!to_a.is_empty(), "B must emit response segments");
+        a.input(&to_a, t0 + 3);
+        let mut resp = [0u8; 128];
+        let n = a.read(&mut resp);
+        assert_eq!(&resp[..n], b"HTTP/1.1 200 OK\r\n\r\nbody");
     }
 
     #[test]
