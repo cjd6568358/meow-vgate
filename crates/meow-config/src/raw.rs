@@ -532,6 +532,19 @@ pub struct RawInboundUser {
     pub alter_id: Option<u16>,
 }
 
+/// FORK DELTA: mihomo spells `mkcp-config.congestion` as a bool (BBR toggle,
+/// go-baseline/listener/config/mkcp.go:11) but device config.yaml writes
+/// `false` while older fork docs/tests used `bbr`. Accept both so the real
+/// config loads byte-for-byte unchanged. The value is currently parsed but
+/// not wired into KcpConfig, so no semantic conversion is needed.
+#[cfg(feature = "server-inbound")]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum MkcpCongestion {
+    Flag(bool),
+    Label(String),
+}
+
 /// FORK DELTA: `mkcp-config` sub-block of a vmess `listeners:` item.
 #[cfg(feature = "server-inbound")]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -542,7 +555,7 @@ pub struct RawMkcpConfig {
     pub tti: Option<u32>,
     pub uplink_capacity: Option<u32>,
     pub downlink_capacity: Option<u32>,
-    pub congestion: Option<String>,
+    pub congestion: Option<MkcpCongestion>,
     pub read_buffer: Option<u32>,
     pub write_buffer: Option<u32>,
 }

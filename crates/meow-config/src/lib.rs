@@ -245,7 +245,9 @@ pub struct MkcpInboundConfig {
     pub tti: Option<u32>,
     pub uplink_capacity: Option<u32>,
     pub downlink_capacity: Option<u32>,
-    pub congestion: Option<String>,
+    /// Accepts mihomo's bool (BBR on/off) and the fork's legacy string form
+    /// so device config.yaml loads unchanged. See raw::MkcpCongestion.
+    pub congestion: Option<crate::raw::MkcpCongestion>,
     pub read_buffer: Option<u32>,
     pub write_buffer: Option<u32>,
 }
@@ -4439,7 +4441,7 @@ fn build_mkcp_config(raw: &raw::RawMkcpConfig) -> MkcpInboundConfig {
         tti: raw.tti,
         uplink_capacity: raw.uplink_capacity,
         downlink_capacity: raw.downlink_capacity,
-        congestion: raw.congestion.clone(),
+        congestion: raw.congestion,
         read_buffer: raw.read_buffer,
         write_buffer: raw.write_buffer,
     }

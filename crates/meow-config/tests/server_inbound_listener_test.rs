@@ -95,7 +95,10 @@ async fn c01_parses_vless_and_vmess_listeners() {
     assert_eq!(mkcp.tti, Some(20));
     assert_eq!(mkcp.uplink_capacity, Some(12));
     assert_eq!(mkcp.downlink_capacity, Some(10));
-    assert_eq!(mkcp.congestion.as_deref(), Some("bbr"));
+    assert_eq!(
+        mkcp.congestion,
+        Some(meow_config::raw::MkcpCongestion::Label("bbr".to_string()))
+    );
     assert_eq!(mkcp.read_buffer, Some(2));
     assert_eq!(mkcp.write_buffer, Some(2));
 }
@@ -164,4 +167,64 @@ listeners:
         panic!("missing users must be rejected")
     };
     assert!(format!("{error:#}").contains("listeners[empty-vless].users"));
+}
+
+/// Device-shape regression: the deployment's real config.yaml writes
+/// `users[].username` and `mkcp-config.congestion: false` (bool, mihomo
+/// mkcp.go:11). Both differ from the fork's original synthetic fixture.
+/// The config must load byte-for-byte unchanged for drop-in replacement.
+const DEVICE_SHAPE_YAML: &str = r#"
+listeners:
+  - name: vless-19001
+    type: vless
+    listen: 0.0.0.0
+    port: 19001
+    users:
+      - username: u1
+        uuid: 00000000-0000-4000-8000-000000000001
+        flow: ""
+    ws-path: /free
+    allow-insecure: true
+  - name: vmess-19002
+    type: vmess
+    listen: 0.0.0.0
+    port: 19002
+    users:
+      - username: u1
+        uuid: 00000000-0000-4000-8000-000000000002
+        alterId: 0
+    mkcp-config:
+      enable: true
+      mtu: 1250
+      tti: 20
+      uplink-capacity: 20
+      downlink-capacity: 20
+      congestion: false
+      read-buffer: 4
+      write-buffer: 4
+"#;
+
+#[tokio::test]
+async fn device_shape_config_loads_unchanged() {
+    let config = load_config_from_str(DEVICE_SHAPE_YAML)
+        .await
+        .expect("device-shape config must load with zero edits");
+    assert_eq!(config.listeners.named.len(), 2);
+
+    let vmess = config
+        .listeners
+        .named
+        .iter()
+        .find_map(|l| match &l.spec {
+            ListenerSpec::Vmess(c) => Some(c),
+            _ => None,
+        })
+        .expect("vmess listener");
+    let mkcp = vmess.mkcp_config.as_ref().expect("mkcp-config");
+    assert_eq!(mkcp.mtu, Some(1250));
+    assert_eq!(
+        mkcp.congestion,
+        Some(meow_config::raw::MkcpCongestion::Flag(false)),
+        "mihomo writes congestion as bool false"
+    );
 }
