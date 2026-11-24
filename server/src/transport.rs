@@ -7,9 +7,12 @@
 
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use bytes::Bytes;
 use futures_util::{Sink, Stream};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -55,6 +58,13 @@ impl ServerTransport for WsAccept {
     #[allow(clippy::result_large_err)]
     async fn accept(&self, inner: DynStream) -> Result<DynStream> {
         let path = self.path.clone();
+        // Xray/v2ray/mihomo VLESS-WS clients may carry the first application
+        // bytes (the VLESS request header + initial payload) base64url-encoded
+        // in Sec-WebSocket-Protocol (0-RTT). The handshake response does NOT
+        // echo it (matching go-baseline/transport/vmess/websocket.go); instead
+        // the decoded bytes must be fed to the VLESS reader BEFORE WS frames.
+        let early = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let early_cb = Arc::clone(&early);
         let websocket: WebSocketStream<DynStream> = accept_hdr_async(
             inner,
             move |request: &Request,
@@ -62,12 +72,23 @@ impl ServerTransport for WsAccept {
                   -> std::result::Result<Response, ErrorResponse> {
                 // tungstenite supplies the Sec-WebSocket-Accept header; keep
                 // its response and only add the path check.
-                validate_response_path(request, response, &path)
+                let response = validate_response_path(request, response, &path)?;
+                if let Some(value) = request.headers().get("sec-websocket-protocol") {
+                    if let Ok(text) = value.to_str() {
+                        if let Some(decoded) = decode_early_data(text) {
+                            *early_cb.lock().expect("early-data mutex poisoned") = decoded;
+                        }
+                    }
+                }
+                Ok(response)
             },
         )
         .await?;
 
-        Ok(Box::new(WsByteStream::new(websocket)))
+        let early = early.lock().expect("early-data mutex poisoned").clone();
+        Ok(Box::new(WsByteStream::new_with_early_data(
+            websocket, early,
+        )))
     }
 }
 
@@ -91,6 +112,18 @@ fn validate_response_path(
     Ok(response)
 }
 
+/// Decode Xray/v2ray WS 0-RTT early data from Sec-WebSocket-Protocol.
+/// go-baseline/transport/vmess/websocket.go:529 maps `+`/`/`→`-`/`_` and
+/// strips `=`, i.e. base64url without padding. Returns None for a header that
+/// is not valid early data (e.g. a genuine subprotocol negotiation string).
+fn decode_early_data(value: &str) -> Option<Vec<u8>> {
+    if value.is_empty() {
+        return None;
+    }
+    let decoded = URL_SAFE_NO_PAD.decode(value).ok()?;
+    (!decoded.is_empty()).then_some(decoded)
+}
+
 /// Byte-oriented view of a WebSocket message stream.
 ///
 /// `tokio-tungstenite 0.29` exposes `Stream<Message>` / `Sink<Message>` but no
@@ -104,10 +137,13 @@ pub struct WsByteStream<S> {
 }
 
 impl<S> WsByteStream<S> {
-    fn new(inner: WebSocketStream<S>) -> Self {
+    /// Seed the read buffer with WS 0-RTT early data (decoded from the
+    /// client's Sec-WebSocket-Protocol). poll_read drains this before any
+    /// real WS frame, so VLESS sees the request header first.
+    fn new_with_early_data(inner: WebSocketStream<S>, early: Vec<u8>) -> Self {
         Self {
             inner,
-            read_buffer: Bytes::new(),
+            read_buffer: Bytes::from(early),
             read_offset: 0,
             pending_pong: None,
         }
@@ -259,5 +295,24 @@ mod tests {
     fn path_check_is_exact_not_prefix_based() {
         assert!(validate_response_path(&request("/ws/extra"), response(), "/ws").is_err());
         assert!(validate_response_path(&request("/WS"), response(), "/ws").is_err());
+    }
+
+    #[test]
+    fn decodes_xray_ws_0rtt_early_data() {
+        // Captured shape from a real mihomo/FlClash client: VLESS header bytes
+        // encoded as base64url without padding in Sec-WebSocket-Protocol.
+        let encoded = URL_SAFE_NO_PAD.encode(b"\x00\x01\x02VLESS-payload");
+        assert_eq!(
+            decode_early_data(&encoded),
+            Some(b"\x00\x01\x02VLESS-payload".to_vec())
+        );
+    }
+
+    #[test]
+    fn rejects_empty_or_invalid_early_data() {
+        assert_eq!(decode_early_data(""), None);
+        // '!' is outside base64url; Go's decodeEd fails the same way and
+        // returns no early data (falls back to reading WS frames).
+        assert_eq!(decode_early_data("not-base64!"), None);
     }
 }

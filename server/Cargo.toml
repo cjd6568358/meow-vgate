@@ -36,6 +36,7 @@ publish = false
 
 [dependencies]
 aes-gcm = "0.10"
+base64 = "0.22"
 async-trait = "0.1"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
