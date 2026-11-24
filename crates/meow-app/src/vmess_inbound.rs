@@ -226,13 +226,23 @@ where
         tracing::debug!("vmess body: inbound pump started");
         let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
 
-        let mut dump = vec![0u8; 4096];
-        let dn = kcp_read.read(&mut dump).await.unwrap_or(0);
-        tracing::warn!(
-            "vmess DIAG: remaining {dn} bytes = {:02x?}",
-            &dump[..dn.min(130)]
-        );
-        let _ = &mut cipher;
+        let mut record = Vec::new();
+        let mut writer = vmess_write;
+        loop {
+            match cipher.read_record_into(&mut kcp_read, &mut record).await {
+                Ok(Some(())) => {
+                    tracing::debug!("vmess body: decrypted {} bytes -> tunnel", record.len());
+                    if writer.write_all(&record).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("vmess body: read_record error: {e}");
+                    break;
+                }
+            }
+        }
         tracing::debug!("vmess body: inbound pump ended");
     });
 
