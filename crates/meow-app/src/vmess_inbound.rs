@@ -346,6 +346,7 @@ mod tests {
         plain[1..17].copy_from_slice(&[0x10; 16]);
         plain[17..33].copy_from_slice(&[0x20; 16]);
         plain[33] = 0x77;
+        plain[34] = 0x01; // chunk stream
         plain[35] = 0x03;
         plain[37] = CMD_TCP;
         plain[38..40].copy_from_slice(&443u16.to_be_bytes());
@@ -364,6 +365,7 @@ mod tests {
         let domain = b"example.com";
         let mut plain = vec![0u8; 42 + 1 + domain.len() + 4];
         plain[0] = 0x01;
+        plain[34] = 0x01; // chunk stream
         plain[35] = 0x04;
         plain[37] = CMD_TCP;
         plain[38..40].copy_from_slice(&80u16.to_be_bytes());

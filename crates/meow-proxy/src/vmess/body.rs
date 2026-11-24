@@ -418,9 +418,9 @@ impl BodyCipher {
         // with req_iv at construction; each record consumes 2 bytes.
         let mut len_value = u16::from_be_bytes(len_buf);
         if let Some(mask) = self.read_mask.as_mut() {
-            let mut hashCode = [0u8; 2];
-            mask.read(&mut hashCode);
-            len_value ^= u16::from_be_bytes(hashCode);
+            let mut hash_code = [0u8; 2];
+            mask.read(&mut hash_code);
+            len_value ^= u16::from_be_bytes(hash_code);
         }
         let len = len_value as usize;
         if len == 0 {
