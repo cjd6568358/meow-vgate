@@ -4441,7 +4441,7 @@ fn build_mkcp_config(raw: &raw::RawMkcpConfig) -> MkcpInboundConfig {
         tti: raw.tti,
         uplink_capacity: raw.uplink_capacity,
         downlink_capacity: raw.downlink_capacity,
-        congestion: raw.congestion,
+        congestion: raw.congestion.clone(),
         read_buffer: raw.read_buffer,
         write_buffer: raw.write_buffer,
     }
