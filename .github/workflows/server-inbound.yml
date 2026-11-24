@@ -80,6 +80,9 @@ jobs:
         with:
           cache-on-failure: true
 
+      - name: Body cipher roundtrip test
+        run: cargo test -p meow-app --features server-inbound --bin meow body_cipher_client_seal_server_open -- --nocapture
+
       - name: Build meow with server inbounds
         run: cargo build -p meow-app --features server-inbound
 

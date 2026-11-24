@@ -226,14 +226,6 @@ where
         tracing::debug!("vmess body: inbound pump started");
         let mut cipher = BodyCipher::new_server_full(security, &req_key, &req_iv);
 
-        // TEMP DIAG: peek the raw body framing before the codec consumes it.
-        let mut peek = [0u8; 4];
-        let got = kcp_read.read(&mut peek).await.unwrap_or(0);
-        tracing::warn!(
-            "vmess body DIAG: first read got {got} bytes: {:02x?}",
-            &peek[..got]
-        );
-
         let mut record = Vec::new();
         let mut writer = vmess_write;
         loop {
@@ -400,5 +392,32 @@ mod tests {
         assert_eq!(opened.req_key, sealed.req_key);
         assert_eq!(opened.req_iv, sealed.req_iv);
         assert_eq!(opened.resp_v, sealed.resp_v);
+    }
+
+    #[tokio::test]
+    async fn body_cipher_client_seal_server_open_roundtrip() {
+        use tokio::io::AsyncWriteExt;
+
+        let req_key = [0x20u8; 16];
+        let req_iv = [0x10u8; 16];
+        let plaintext = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+
+        // Client seals a request-body record with the request keys.
+        let mut writer = BodyCipher::new_writer(Security::Aes128Gcm, &req_key, &req_iv);
+        let mut wire = Vec::new();
+        writer.write_record(&mut wire, plaintext).await.unwrap();
+        let len_prefix = u16::from_be_bytes([wire[0], wire[1]]) as usize;
+        assert_eq!(len_prefix, plaintext.len() + 16);
+
+        // Server opens with the full directional cipher.
+        let mut server = BodyCipher::new_server_full(Security::Aes128Gcm, &req_key, &req_iv);
+        let mut cursor = &wire[..];
+        let mut out = Vec::new();
+        let got = server
+            .read_record_into(&mut cursor, &mut out)
+            .await
+            .unwrap();
+        assert!(got.is_some());
+        assert_eq!(&out, plaintext);
     }
 }
