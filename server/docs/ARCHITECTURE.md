@@ -268,8 +268,15 @@ fork delta 被限制在 §5.2 的 7 个 hook 点，且全部是新增分支、�
 
 1. 先在 `/tmp`（tmpfs）用单进程二进制 + 脱敏配置试跑，不碰 `/opt` 持久层。
 2. 验证 7891 / 9090 / 19001 / 19002 与客户端零改动连通。
-3. 受控窗口内替换 `/opt/armbian/bin/mihomo/mihomo`，复用现役 `mihomo_start.sh` / `user_init.sh`。
-4. 保留原二进制与配置的回滚路径；第一轮不改持久配置、不执行 `save`。
+3. 受控窗口内持久化（2026-11-24 落地，机主选方案 B）：
+   - 二进制落 `/opt/armbian/bin/mihomo/meow-vgate`（**新名字**，旧 `mihomo` 保留作回滚锚点）。
+   - 仅改 `mihomo_start.sh` 的 `APP=` 一行指向新二进制；`user_init.sh` 只调脚本路径，无需改。
+   - `Country.mmdb` 落 `/opt/armbian/bin/mihomo/geo/`，并把脚本的 geo 预置列表
+     从 `GeoSite.dat geoip.metadb` 扩为三项——我们的二进制需要 Country.mmdb（现役 mihomo 不需要）。
+   - CI artifact 名：`meow-vgate-v0.29.0-aarch64-linux-musl` /
+     `meow-vgate-v0.29.0-armv7hf-linux-musl`。
+4. 保留原二进制、原脚本备份与配置的回滚路径（备份 `mihomo_start.sh.bak-<ts>`；
+   回滚 = 恢复备份脚本 + stop/start）；第一轮不改持久配置、不执行 `save`。
 5. 设备 512 MB RAM、flash 余量紧，禁止 UPX 与触碰大量内存页的探针。
 
 ### 9.4 版本矩阵（待填）
