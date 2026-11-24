@@ -16,7 +16,7 @@ proxies:
     port: 19002
     uuid: 00000000-0000-4000-8000-000000000002
     alterId: 0
-    cipher: auto
+    cipher: aes-128-gcm
     network: kcp
     kcp-opts:
       mtu: 1350
