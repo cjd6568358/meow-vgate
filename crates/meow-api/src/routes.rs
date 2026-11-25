@@ -2497,8 +2497,8 @@ async fn set_subscription_enabled(
         raw
     };
     let change = subscription_event(logbook::kind::CONFIG_CHANGE, "Disabled", &snapshot, &name);
-    commit_raw_candidate(state, snapshot.clone(), change).await?;
-    let persisted = persist_candidate(state, &snapshot, &name).await?;
+    commit_raw_candidate(&state, snapshot.clone(), change).await?;
+    let persisted = persist_candidate(&state, &snapshot, &name).await?;
     Ok(Json(serde_json::json!({
         "message": "subscription disabled",
         "name": name,
