@@ -2436,10 +2436,10 @@ async fn do_activate_subscription(
         (raw, counts)
     };
     let change = subscription_event(logbook::kind::CONFIG_CHANGE, "Activated", &snapshot, name);
-    commit_raw_candidate(&state, snapshot.clone(), change)
+    commit_raw_candidate(state, snapshot.clone(), change)
         .await
         .inspect_err(|(_, message)| subscription_failed(name, message))?;
-    let persisted = persist_candidate(&state, &snapshot, name).await?;
+    let persisted = persist_candidate(state, &snapshot, name).await?;
 
     Ok(serde_json::json!({
         "message": "subscription activated",
@@ -2497,8 +2497,8 @@ async fn set_subscription_enabled(
         raw
     };
     let change = subscription_event(logbook::kind::CONFIG_CHANGE, "Disabled", &snapshot, &name);
-    commit_raw_candidate(&state, snapshot.clone(), change).await?;
-    let persisted = persist_candidate(&state, &snapshot, &name).await?;
+    commit_raw_candidate(state, snapshot.clone(), change).await?;
+    let persisted = persist_candidate(state, &snapshot, &name).await?;
     Ok(Json(serde_json::json!({
         "message": "subscription disabled",
         "name": name,
