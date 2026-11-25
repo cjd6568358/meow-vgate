@@ -57,6 +57,13 @@ input:focus, select:focus { outline: none; border-color: #64b5f6; }
 .proxy-item:hover { border-color: #64b5f6; background: rgba(100,181,246,0.1); }
 .proxy-item.selected { border-color: #64b5f6; background: #1565c0; color: white; }
 .proxy-item.non-select { cursor: default; border-color: #2a3a4a; }
+.proxy-item { display: flex; align-items: center; gap: 6px; }
+.proxy-item .pname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.delay-badge { font-size: 11px; color: #81c784; font-weight: 600; white-space: nowrap; }
+.delay-badge.delay-fail { color: #e57373; }
+.delay-badge.delay-pending { color: #64b5f6; }
+.test-btn { background: none; border: 1px solid #2a3a4a; color: #64b5f6; border-radius: 4px; cursor: pointer; font-size: 11px; padding: 1px 5px; flex-shrink: 0; }
+.test-btn:hover { background: rgba(100,181,246,0.2); }
 .rule-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #2a3a4a; }
 .rule-row .grip { cursor: grab; color: #556677; padding: 0 4px; user-select: none; }
 .rule-row .grip:active { cursor: grabbing; }
@@ -69,6 +76,10 @@ select option { background: #1a2634; }
 .search-box { margin-bottom: 12px; }
 .search-box input { width: 100%; }
 .secret-input { width: 160px; background: #0f1923; border: 1px solid #2a3a4a; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; font-size: 13px; }
+.header-link { color: #4ec9b0; font-size: 13px; text-decoration: none; padding: 6px 8px; border: 1px solid #2a3a4a; border-radius: 4px; }
+.header-link:hover { background: rgba(78,201,176,0.1); }
+.copy-btn { background: #0f1923; border: 1px solid #2a3a4a; color: #64b5f6; padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.copy-btn:hover { background: rgba(100,181,246,0.15); border-color: #64b5f6; }
 </style>
 </head>
 <body>
@@ -76,6 +87,10 @@ select option { background: #1a2634; }
 <header>
   <h1>meow-rs</h1>
   <div class="header-actions">
+    <a class="header-link" href="https://yacd.metacubex.one" target="_blank" rel="noopener noreferrer" title="Open yacd dashboard in a new tab">yacd ↗</a>
+    <button class="copy-btn" onclick="copyProxyCmd('http')" title="Copy HTTP proxy export command">copy HTTP</button>
+    <button class="copy-btn" onclick="copyProxyCmd('https')" title="Copy HTTPS proxy export command">copy HTTPS</button>
+    <button class="copy-btn" onclick="copyProxyCmd('all')" title="Copy ALL_PROXY export command">copy ALL</button>
     <input type="password" id="api-secret" placeholder="API Secret"
            class="secret-input" />
     <button class="btn btn-success" onclick="saveConfig()">Save Config</button>
@@ -237,6 +252,31 @@ function formatTime(ts) {
   return new Date(ts * 1000).toLocaleString();
 }
 
+let _proxyPort = 7891;
+async function copyProxyCmd(kind) {
+  try {
+    const cfg = await api('/configs');
+    if (cfg['mixed-port']) _proxyPort = cfg['mixed-port'];
+  } catch (e) { /* keep default 7891 */ }
+  const host = location.hostname || '127.0.0.1';
+  const url = `http://${host}:${_proxyPort}`;
+  let cmd;
+  if (kind === 'http') cmd = `export http_proxy=${url}`;
+  else if (kind === 'https') cmd = `export https_proxy=${url}`;
+  else cmd = `export http_proxy=${url} https_proxy=${url} all_proxy=${url}`;
+  try {
+    await navigator.clipboard.writeText(cmd);
+    toast('已复制: ' + cmd, 'success');
+  } catch (e) {
+    // clipboard API needs https/secure context; fall back to a temp textarea.
+    const ta = document.createElement('textarea');
+    ta.value = cmd; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); toast('已复制: ' + cmd, 'success'); }
+    catch (_) { toast('复制失败，请手动复制: ' + cmd, 'error'); }
+    document.body.removeChild(ta);
+  }
+}
+
 async function api(path, opts) {
   const secret = localStorage.getItem('meow-secret') || '';
   const headers = { 'Content-Type': 'application/json' };
@@ -288,7 +328,11 @@ async function setMode(mode) {
 
 async function loadProxySelector() {
   try {
-    const groups = await api('/api/proxy-groups');
+    const [groups, proxyData] = await Promise.all([api('/api/proxy-groups'), api('/proxies')]);
+    const delayMap = {};
+    for (const [name, p] of Object.entries(proxyData.proxies || {})) {
+      if (p.delay) delayMap[name] = p.delay;
+    }
     const container = document.getElementById('proxy-groups-selector');
     const empty = document.getElementById('proxy-selector-empty');
     container.innerHTML = '';
@@ -302,26 +346,81 @@ async function loadProxySelector() {
 
       let header = `<div class="group-header"><strong>${esc(g.name)}</strong> <span class="badge badge-${badgeClass}">${esc(g.type)}</span>`;
       if (isSelector && g.now) header += ` <span style="color:#8899aa;font-size:12px">current: ${esc(g.now)}</span>`;
+      header += ` <button class="test-btn" data-testgroup="${esc(g.name)}" style="margin-left:auto">测速全部</button>`;
       header += '</div>';
 
       let grid = '<div class="proxy-grid">';
       for (const p of g.proxies) {
         const selected = (p === g.now) ? ' selected' : '';
+        const d = delayMap[p];
+        const delayHtml = d ? `<span class="delay-badge" data-delay-for="${esc(p)}">${d}ms</span>` : `<span class="delay-badge" data-delay-for="${esc(p)}" style="display:none"></span>`;
+        const testBtn = `<button class="test-btn" data-testproxy="${esc(p)}" title="测速">⚡</button>`;
+        const body = `<span class="pname" title="${esc(p)}">${esc(p)}</span>${delayHtml}${testBtn}`;
         if (isSelector) {
-          grid += `<div class="proxy-item${selected}" data-group="${esc(g.name)}" data-proxy="${esc(p)}" title="${esc(p)}">${esc(p)}</div>`;
+          grid += `<div class="proxy-item${selected}" data-group="${esc(g.name)}" data-proxy="${esc(p)}">${body}</div>`;
         } else {
-          grid += `<div class="proxy-item non-select" title="${esc(p)}">${esc(p)}</div>`;
+          grid += `<div class="proxy-item non-select" data-proxy="${esc(p)}">${body}</div>`;
         }
       }
       grid += '</div>';
 
       card.innerHTML = header + grid;
-      card.querySelectorAll('.proxy-item[data-proxy]').forEach(item => {
-        item.addEventListener('click', () => selectInGroup(item.dataset.group, item.dataset.proxy, item));
+      card.querySelectorAll('.proxy-item[data-group]').forEach(item => {
+        item.addEventListener('click', (e) => {
+          if (e.target.closest('.test-btn')) return;
+          selectInGroup(item.dataset.group, item.dataset.proxy, item);
+        });
       });
+      card.querySelectorAll('[data-testproxy]').forEach(btn => {
+        btn.addEventListener('click', (e) => { e.stopPropagation(); testProxyDelay(btn.dataset.testproxy); });
+      });
+      const gbtn = card.querySelector('[data-testgroup]');
+      if (gbtn) gbtn.addEventListener('click', () => testGroupDelay(g.name, g.proxies));
       container.appendChild(card);
     }
   } catch (e) { toast('Failed to load proxies: ' + e.message, 'error'); }
+}
+
+const TEST_URL = 'https://www.gstatic.com/generate_204';
+
+function showDelay(name, text, ok) {
+  const el = document.querySelector(`[data-delay-for="${CSS.escape(name)}"]`);
+  if (!el) return;
+  el.textContent = text;
+  el.style.display = '';
+  el.classList.toggle('delay-fail', !ok);
+}
+
+async function testProxyDelay(name) {
+  showDelay(name, '…', true);
+  try {
+    const q = `url=${encodeURIComponent(TEST_URL)}&timeout=5000`;
+    const r = await api(`/proxies/${encodeURIComponent(name)}/delay?${q}`);
+    showDelay(name, r.delay + 'ms', true);
+  } catch (e) {
+    showDelay(name, 'fail', false);
+  }
+}
+
+async function testGroupDelay(groupName, proxies) {
+  const testable = proxies.filter(n => n !== 'DIRECT' && n !== 'REJECT' && n !== 'REJECT-DROP');
+  if (!testable.length) return;
+  for (const n of testable) showDelay(n, '…', true);
+  const q = `url=${encodeURIComponent(TEST_URL)}&timeout=5000`;
+  const results = await Promise.all(testable.map(async n => {
+    try {
+      const r = await api(`/proxies/${encodeURIComponent(n)}/delay?${q}`);
+      return [n, r.delay];
+    } catch (e) {
+      return [n, null];
+    }
+  }));
+  for (const [n, delay] of results) {
+    if (delay === null) showDelay(n, 'fail', false);
+    else showDelay(n, delay + 'ms', true);
+  }
+  const ok = results.filter(r => r[1] !== null).length;
+  toast(`测速完成: ${ok}/${results.length} 可用`, ok ? 'success' : 'error');
 }
 
 async function selectInGroup(group, proxy, el) {
