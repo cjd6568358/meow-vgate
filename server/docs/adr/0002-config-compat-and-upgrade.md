@@ -123,10 +123,43 @@
 4. 机主授权后在光猫 `/tmp` 单进程试跑，再受控切换入口。
 5. upstream 新 tag 按 §5 重放并填版本矩阵。
 
+## 运行期观察（2026-11-25 真机）
+
+部署后（v0.29.0 单进程，重启开机自启验证通过）的两项澄清：
+
+### REST API 与内置 UI
+- `external-controller: 192.168.1.1:9090` **同时提供 REST API 和内置管理面板**。
+  ~~9090 只有 API、无 UI~~ 是误判（测试时 shell 把 `/ui` 当本地路径展开）。
+- 面板正确路径 **`http://192.168.1.1:9090/ui`（无尾斜杠）**，28KB 单文件 HTML
+  （title `meow-rs`）；`/ui/` 404、`/ui/index.html` 200。
+- 鉴权：页面有 API Secret 输入框 → localStorage；REST 带 `Authorization: Bearer`，
+  WS 用 `?token=`，另支持 URL hash `#token=` 自动注入。
+- 面板依赖的 8 个端点全部实测可用：`/api/config/save`(POST)、`/api/proxy-groups`、
+  `/api/subscriptions`、`/configs`、`/proxies`、`/rules`、`/connections`、
+  `/rules/reorder`(POST+JSON)。可查看/排序规则、切换节点、保存配置。
+- **注意**：`/api/config/save` 会真写配置，勿误点。在线 yacd 不再是必需。
+
+### 日志统一与调试
+- 启动脚本 `mihomo_start.sh` 已导出 `RUST_LOG`（info + `meow`/`meow_server` debug，
+  health_check 降 error 降噪），所有输出经 `nohup >> /tmp/mihomo.log` 统一落盘；
+  `/tmp` 为 tmpfs，重启自动清空。二进制无需重编即支持 debug。
+
+### 7891 暴露面（风险记录，未改设备）
+- 设备 7891：`mixed-port 7891` + `allow-lan: true` + `bind-address 192.168.1.1`
+  + `authentication: null`（**无认证**）；`iptables -S INPUT` 无任何 7891 规则，
+  INPUT 默认 ACCEPT。
+- 现有 `port_guard.sh`（护 7890 easytier）**未覆盖 7891**。
+- 判断：7891 是代理口而非登录口，无密码可猜 ⇒ "爆破"意义有限，真正风险是
+  **免密被当开放代理滥用**。可选加固（机主未决定，均未执行）：
+  ① 挂 `port_guard.sh -p 7891 -c -t 80 -w 600` 挡扫描器短连；
+  ② config `authentication` 加用户名密码（会影响现有客户端，需同步配置）。
+- 设备公网侧已见扫描器打 19001（日志 `invalid VLESS address type: 0`），
+  说明端口暴露面真实存在，非理论风险。
+
 ## Open questions
 
-- 设备单进程组合二进制的总体积上限（flash 余量以实采为准）。aarch64-musl 与
-  armv7hf-musl 两个静态 stripped 产物均已实测（见 ADR 0001），正式 cap 待签字。
+- ~~设备单进程组合二进制的总体积上限~~ — 机主 2026-11-24 签字定为 14 MiB，
+  两个静态 stripped 产物共用，已接入阻断 CI（见 ADR 0001 §4）。
 - ~~`mkcp-config` 字段是否全部逐项生效~~ — 2026-11-24 真机验证：现役取值集合
   （mtu/tti/capacity/buffer/congestion）全部能解析并加载；其中发现并修复了
   **buffer 单位 bug**：mihomo 的 `read-buffer`/`write-buffer` 是 MiB，我们曾当字节
