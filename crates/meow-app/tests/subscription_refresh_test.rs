@@ -369,6 +369,7 @@ async fn delete_during_in_flight_refresh_discards_payload() {
         .unwrap()
         .push(RawSubscription {
             name: "marker".into(),
+            enabled: true,
             url: format!("http://{marker_addr}/sub"),
             interval: Some(3600),
             last_updated: None,
@@ -636,6 +637,7 @@ async fn refresh_fetches_through_subscription_proxy() {
             0,
             meow_config::raw::RawSubscription {
                 name: "ghost-sub".to_string(),
+                enabled: true,
                 url: ghost_url,
                 interval: Some(3600),
                 last_updated: None,

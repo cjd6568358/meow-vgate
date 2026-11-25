@@ -248,6 +248,14 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/api/subscriptions/{name}/refresh",
             post(refresh_subscription),
         )
+        .route(
+            "/api/subscriptions/{name}/activate",
+            post(activate_subscription),
+        )
+        .route(
+            "/api/subscriptions/{name}/enabled",
+            post(set_subscription_enabled),
+        )
         // Proxy groups
         .route(
             "/api/proxy-groups",
@@ -2070,6 +2078,7 @@ async fn rebuild_from_raw_runtime_async(
 struct SubscriptionInfo {
     name: String,
     url: String,
+    enabled: bool,
     interval: Option<u64>,
     last_updated: Option<i64>,
     proxy: Option<String>,
@@ -2086,6 +2095,7 @@ async fn get_subscriptions(State(state): State<Arc<AppState>>) -> Json<Vec<Subsc
         .map(|s| SubscriptionInfo {
             name: s.name.clone(),
             url: s.url.clone(),
+            enabled: s.enabled,
             interval: s.interval,
             last_updated: s.last_updated,
             proxy: s.proxy.clone(),
@@ -2161,6 +2171,7 @@ async fn add_subscription(
 
         let sub = RawSubscription {
             name: body.name.clone(),
+            enabled: true,
             url: body.url.clone(),
             interval: body.interval,
             last_updated: Some(now),
@@ -2328,6 +2339,169 @@ async fn refresh_subscription(
         "proxy_count": counts.proxies,
         "group_count": counts.proxy_groups,
         "rule_count": counts.rules,
+        "persisted": persisted,
+    })))
+}
+
+/// Activate exactly one subscription: drop every subscription's current
+/// contribution, then rebuild the proxies/groups/rules purely from `name`.
+/// All other subscriptions are marked disabled so they no longer auto-update.
+/// Local (non-subscription) entries survive — contribution merge is preserved
+/// for the activated one and the local table is left intact.
+async fn do_activate_subscription(
+    state: &Arc<AppState>,
+    name: &str,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let (url, proxy_name, strict) = {
+        let raw = state.raw_config.read();
+        let (url, proxy_name) = raw
+            .subscriptions
+            .as_ref()
+            .and_then(|subs| subs.iter().find(|s| s.name == name))
+            .map(|s| (s.url.clone(), s.proxy.clone()))
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "subscription not found".into()))?;
+        (url, proxy_name, raw.strict.unwrap_or(false))
+    };
+
+    let failed = |message: String| {
+        subscription_failed(name, &message);
+        (StatusCode::BAD_REQUEST, message)
+    };
+    let download_proxy = meow_config::internal_http::resolve_download_proxy(
+        &state.provider_dialer_registry,
+        proxy_name.as_deref(),
+    )
+    .map_err(|e| failed(e.to_string()))?;
+    let mut fetched =
+        meow_config::subscription::fetch_subscription(&url, strict, download_proxy.as_ref())
+            .await
+            .map_err(|e| failed(format!("fetch failed: {e}")))?;
+    meow_config::ech_dns::preresolve_ech(&mut fetched.proxies, strict)
+        .await
+        .map_err(|e| failed(format!("{e} (strict mode)")))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let _mutation = CONFIG_MUTATION.lock().await;
+    let (snapshot, counts) = {
+        let mut raw = state.raw_config.read().clone();
+
+        // Re-verify inside the lane: a same-name re-add with a different
+        // URL must not inherit a payload fetched from the old one (#543).
+        let current_url = raw
+            .subscriptions
+            .as_ref()
+            .and_then(|subs| subs.iter().find(|s| s.name == name))
+            .map(|s| s.url.clone())
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "subscription not found".into()))?;
+        if current_url != url {
+            return Err((
+                StatusCode::CONFLICT,
+                "subscription changed while activation was in flight".into(),
+            ));
+        }
+
+        // Clear EVERY subscription's tracked contribution so the final
+        // proxies/groups/rules come solely from the activated subscription
+        // (plus local entries no subscription ever claimed).
+        let all_names: Vec<String> = raw
+            .subscriptions
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        for other in &all_names {
+            meow_config::subscription::remove_subscription_contribution(&mut raw, other);
+        }
+
+        // Exactly one enabled; stamp the activated subscription's fetch time.
+        if let Some(ref mut subs) = raw.subscriptions {
+            for s in subs.iter_mut() {
+                s.enabled = s.name == name;
+                if s.enabled {
+                    s.last_updated = Some(now);
+                }
+            }
+        }
+
+        // Rebuild from the fetched payload. `apply_subscription` sees empty
+        // applied-* sets now, so it prepends the full remote table once.
+        let counts = meow_config::subscription::apply_subscription(&mut raw, name, fetched)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "subscription not found".into()))?;
+
+        (raw, counts)
+    };
+    let change = subscription_event(logbook::kind::CONFIG_CHANGE, "Activated", &snapshot, name);
+    commit_raw_candidate(&state, snapshot.clone(), change)
+        .await
+        .inspect_err(|(_, message)| subscription_failed(name, message))?;
+    let persisted = persist_candidate(&state, &snapshot, name).await?;
+
+    Ok(serde_json::json!({
+        "message": "subscription activated",
+        "active": name,
+        "proxy_count": counts.proxies,
+        "group_count": counts.proxy_groups,
+        "rule_count": counts.rules,
+        "persisted": persisted,
+    }))
+}
+
+async fn activate_subscription(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Ok(Json(do_activate_subscription(&state, &name).await?))
+}
+
+/// Enable or disable a subscription. Enabling routes through the full
+/// activate path (exclusive single-active subscription). Disabling removes
+/// its contribution and flips it off; if it was the active one, no
+/// subscription remains enabled until another is activated.
+#[derive(Deserialize)]
+struct SetSubscriptionEnabledRequest {
+    enabled: bool,
+}
+
+async fn set_subscription_enabled(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(body): Json<SetSubscriptionEnabledRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if body.enabled {
+        return Ok(Json(do_activate_subscription(&state, &name).await?));
+    }
+
+    let _mutation = CONFIG_MUTATION.lock().await;
+    let snapshot = {
+        let mut raw = state.raw_config.read().clone();
+        if raw
+            .subscriptions
+            .as_ref()
+            .is_none_or(|subs| !subs.iter().any(|s| s.name == name))
+        {
+            return Err((StatusCode::NOT_FOUND, "subscription not found".into()));
+        }
+        meow_config::subscription::remove_subscription_contribution(&mut raw, &name);
+        if let Some(s) = raw
+            .subscriptions
+            .as_mut()
+            .and_then(|subs| subs.iter_mut().find(|s| s.name == name))
+        {
+            s.enabled = false;
+        }
+        raw
+    };
+    let change = subscription_event(logbook::kind::CONFIG_CHANGE, "Disabled", &snapshot, &name);
+    commit_raw_candidate(&state, snapshot.clone(), change).await?;
+    let persisted = persist_candidate(&state, &snapshot, &name).await?;
+    Ok(Json(serde_json::json!({
+        "message": "subscription disabled",
+        "name": name,
         "persisted": persisted,
     })))
 }

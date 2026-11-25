@@ -91,6 +91,7 @@ fn save_roundtrip_with_subscriptions() {
     let mut raw = minimal_raw_config();
     raw.subscriptions = Some(vec![RawSubscription {
         name: "provider1".into(),
+        enabled: true,
         url: "https://example.com/sub.yaml".into(),
         interval: Some(3600),
         last_updated: Some(1700000000),
@@ -451,6 +452,7 @@ fn raw_config_serialize_deserialize_roundtrip() {
 fn raw_subscription_serde() {
     let sub = RawSubscription {
         name: "test".into(),
+        enabled: true,
         url: "https://example.com".into(),
         interval: Some(7200),
         last_updated: Some(1700000000),
@@ -484,6 +486,7 @@ fn raw_subscription_serde() {
 fn raw_subscription_serde_applied_fields() {
     let sub = RawSubscription {
         name: "test".into(),
+        enabled: true,
         url: "https://example.com".into(),
         interval: None,
         last_updated: None,
@@ -513,6 +516,7 @@ fn raw_subscription_serde_applied_fields() {
 fn raw_subscription_serde_proxy() {
     let sub = RawSubscription {
         name: "test".into(),
+        enabled: true,
         url: "https://example.com".into(),
         interval: Some(7200),
         last_updated: Some(1700000000),
@@ -532,6 +536,7 @@ fn raw_config_clone() {
     let mut raw = minimal_raw_config();
     raw.subscriptions = Some(vec![RawSubscription {
         name: "s".into(),
+        enabled: true,
         url: "u".into(),
         interval: None,
         last_updated: None,

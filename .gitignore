@@ -32,3 +32,8 @@ dh_out.json
 website/node_modules
 website/.vitepress/cache
 website/.vitepress/dist
+
+# Local-only: Zig rewrite reference snapshot (read-only) and WorkBuddy
+# session data. Neither belongs in the meow-vgate source repository.
+/server/zig-docs/
+/.workbuddy-ai/

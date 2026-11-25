@@ -135,7 +135,7 @@ select option { background: #1a2634; }
     <div class="card">
       <h3>Subscriptions</h3>
       <table>
-        <thead><tr><th>Name</th><th>URL</th><th>Proxies</th><th>Groups</th><th>Rules</th><th>Last Updated</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Name</th><th>Status</th><th>URL</th><th>Proxies</th><th>Groups</th><th>Rules</th><th>Last Updated</th><th>Actions</th></tr></thead>
         <tbody id="sub-list"></tbody>
       </table>
       <div id="sub-empty" class="empty">No subscriptions configured</div>
@@ -347,7 +347,11 @@ async function loadSubscriptions() {
     empty.classList.toggle('hidden', subs.length > 0);
     for (const s of subs) {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${esc(s.name)}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.url)}">${esc(s.url)}</td><td>${s.proxy_count}</td><td>${s.group_count}</td><td>${s.rule_count}</td><td>${formatTime(s.last_updated)}</td><td><button class="btn btn-primary btn-sm" data-action="refresh">Refresh</button> <button class="btn btn-danger btn-sm" data-action="delete">Delete</button></td>`;
+      const badge = s.enabled ? '<span style="color:#4ade80;font-weight:600">● Enabled</span>' : '<span style="color:#94a3b8">○ Disabled</span>';
+      const toggleLabel = s.enabled ? 'Disable' : 'Activate';
+      const toggleAct = s.enabled ? 'disable' : 'activate';
+      tr.innerHTML = `<td>${esc(s.name)}</td><td>${badge}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.url)}">${esc(s.url)}</td><td>${s.proxy_count}</td><td>${s.group_count}</td><td>${s.rule_count}</td><td>${formatTime(s.last_updated)}</td><td><button class="btn btn-success btn-sm" data-action="toggle">${toggleLabel}</button> <button class="btn btn-primary btn-sm" data-action="refresh">Refresh</button> <button class="btn btn-danger btn-sm" data-action="delete">Delete</button></td>`;
+      tr.querySelector('[data-action="toggle"]').addEventListener('click', () => toggleSub(s.name, toggleAct));
       tr.querySelector('[data-action="refresh"]').addEventListener('click', () => refreshSub(s.name));
       tr.querySelector('[data-action="delete"]').addEventListener('click', () => deleteSub(s.name));
       tbody.appendChild(tr);
@@ -376,6 +380,23 @@ async function refreshSub(name) {
     toast(`Refreshed: ${r.proxy_count} proxies, ${r.group_count} groups, ${r.rule_count} rules`, 'success');
     loadSubscriptions();
   } catch (e) { toast('Failed: ' + e.message, 'error'); }
+}
+
+async function toggleSub(name, action) {
+  if (action === 'activate') {
+    if (!confirm(`Activate "${name}"? All nodes/groups/rules will be rebuilt ONLY from this subscription; the other subscriptions will be disabled and stop auto-updating.`)) return;
+    try {
+      const r = await api(`/api/subscriptions/${encodeURIComponent(name)}/activate`, { method: 'POST' });
+      toast(`Activated ${name}: ${r.proxy_count} proxies, ${r.group_count} groups, ${r.rule_count} rules`, 'success');
+    } catch (e) { return toast('Failed: ' + e.message, 'error'); }
+  } else {
+    if (!confirm(`Disable "${name}"? Its nodes/groups/rules will be removed.`)) return;
+    try {
+      await api(`/api/subscriptions/${encodeURIComponent(name)}/enabled`, { method: 'POST', body: JSON.stringify({ enabled: false }) });
+      toast('Subscription disabled', 'success');
+    } catch (e) { return toast('Failed: ' + e.message, 'error'); }
+  }
+  loadSubscriptions();
 }
 
 async function deleteSub(name) {

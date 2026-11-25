@@ -493,6 +493,7 @@ mod tests {
     fn sub(name: &str) -> RawSubscription {
         RawSubscription {
             name: name.to_string(),
+            enabled: true,
             url: "http://x/sub".to_string(),
             interval: None,
             last_updated: None,

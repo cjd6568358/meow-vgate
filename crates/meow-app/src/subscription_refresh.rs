@@ -86,16 +86,23 @@ pub async fn run_loop(
                 .as_deref()
                 .unwrap_or(&[])
                 .iter()
-                .filter(|s| match (s.interval, s.last_updated) {
-                    (_, None) => true,
-                    // Clamp before the i64 cast: `u64::MAX as i64` wraps
-                    // negative, which would retrigger a refresh every poll
-                    // (issue #648 review).
-                    (Some(interval), Some(last)) => {
-                        now.saturating_sub(last)
-                            >= interval.min(meow_common::MAX_DURATION_SECS) as i64
+                .filter(|s| {
+                    // Disabled subscriptions never auto-update: only the
+                    // activated one contributes to the live config.
+                    if !s.enabled {
+                        return false;
                     }
-                    (None, Some(_)) => false,
+                    match (s.interval, s.last_updated) {
+                        (_, None) => true,
+                        // Clamp before the i64 cast: `u64::MAX as i64` wraps
+                        // negative, which would retrigger a refresh every poll
+                        // (issue #648 review).
+                        (Some(interval), Some(last)) => {
+                            now.saturating_sub(last)
+                                >= interval.min(meow_common::MAX_DURATION_SECS) as i64
+                        }
+                        (None, Some(_)) => false,
+                    }
                 })
                 .map(|s| (s.name.clone(), s.url.clone(), s.proxy.clone()))
                 .collect()

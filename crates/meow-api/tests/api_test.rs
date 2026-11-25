@@ -1492,6 +1492,7 @@ async fn get_subscriptions_with_data() {
     let mut raw = test_raw_config();
     raw.subscriptions = Some(vec![RawSubscription {
         name: "sub1".into(),
+        enabled: true,
         url: "https://example.com/sub".into(),
         interval: Some(3600),
         last_updated: Some(1000000),
@@ -1525,6 +1526,7 @@ async fn get_subscriptions_reports_counts() {
     let mut raw = test_raw_config();
     raw.subscriptions = Some(vec![RawSubscription {
         name: "mysub".into(),
+        enabled: true,
         url: "https://example.com".into(),
         interval: None,
         last_updated: None,
@@ -1595,6 +1597,7 @@ async fn delete_subscription_clears_data() {
     let mut raw = test_raw_config();
     raw.subscriptions = Some(vec![RawSubscription {
         name: "delsub".into(),
+        enabled: true,
         url: "https://example.com".into(),
         interval: None,
         last_updated: None,
@@ -1711,6 +1714,7 @@ async fn refresh_subscription_deleted_mid_fetch_returns_404() {
     let mut raw = test_raw_config();
     raw.subscriptions = Some(vec![RawSubscription {
         name: "s".into(),
+        enabled: true,
         url: format!("http://{addr}/sub.yaml"),
         interval: None,
         last_updated: None,
@@ -2233,6 +2237,7 @@ async fn delete_subscription_without_backing_file_skips_persist() {
     let mut raw = test_raw_config();
     raw.subscriptions = Some(vec![RawSubscription {
         name: "delsub".into(),
+        enabled: true,
         url: "https://example.com".into(),
         interval: None,
         last_updated: None,
@@ -2346,6 +2351,7 @@ async fn refresh_subscription_without_backing_file_reports_not_persisted() {
     let mut raw = test_raw_config();
     raw.subscriptions = Some(vec![RawSubscription {
         name: "s".into(),
+        enabled: true,
         url: format!("http://{addr}/sub.yaml"),
         interval: Some(600),
         last_updated: None,
@@ -5522,6 +5528,7 @@ async fn put_configs_carries_subscription_tracking_forward() {
     raw.subscriptions = Some(vec![
         RawSubscription {
             name: "s".into(),
+            enabled: true,
             url: "https://a.example.com/".into(),
             interval: None,
             last_updated: None,
@@ -5532,6 +5539,7 @@ async fn put_configs_carries_subscription_tracking_forward() {
         },
         RawSubscription {
             name: "t".into(),
+            enabled: true,
             url: "https://t.example.com/".into(),
             interval: None,
             last_updated: None,

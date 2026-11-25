@@ -1011,11 +1011,19 @@ where
     deserializer.deserialize_any(PortListVisitor)
 }
 
+/// Existing subscription configs predate the enable switch; absence means
+/// enabled so upgrading never silently disables a working subscription.
+fn default_subscription_enabled() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct RawSubscription {
     pub name: String,
     pub url: String,
+    #[serde(default = "default_subscription_enabled")]
+    pub enabled: bool,
     pub interval: Option<u64>,
     pub last_updated: Option<i64>,
     /// Route this subscription's fetches through the named proxy/group,
