@@ -2,8 +2,15 @@
 //!
 //! The deployment config has no `seed`, so the active variant is
 //! `simpleAuthenticator`: FNV-1a32 + a 4-byte-stride XOR difference over the
-//! whole datagram, 6 bytes of overhead. AES-128-GCM (seed non-empty) is
-//! included for completeness but is not used by the F4610U config.
+//! whole datagram, 6 bytes of overhead.
+//!
+//! The AES-128-GCM variant (non-empty `seed`) is library code only: the
+//! listener never selects it (meow-config warns and drops `seed`, server
+//! ADR-0002 Class B divergence #4), and its wire framing has NOT been
+//! verified against the Go oracle — no golden vectors exist in this
+//! checkout. The nonce guards below therefore fail closed (empty seal /
+//! `None` open) instead of panicking on the empty nonce the simple callers
+//! pass.
 
 /// Security mode selected by the `seed` field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,20 +29,6 @@ impl Security {
         let mut key = [0u8; 16];
         key.copy_from_slice(&digest[..16]);
         Self::Aes128Gcm(key)
-    }
-
-    pub fn nonce_size(&self) -> usize {
-        match self {
-            Self::Simple => 0,
-            Self::Aes128Gcm(_) => 12,
-        }
-    }
-
-    pub fn overhead(&self) -> usize {
-        match self {
-            Self::Simple => 6,
-            Self::Aes128Gcm(_) => 16,
-        }
     }
 }
 
@@ -104,11 +97,18 @@ pub fn open_simple(wire: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Seal with the configured security mode. Returns (buffer, wire length).
+///
+/// The AES variant fails closed on a wrong-size nonce — returning an empty
+/// wire — rather than panicking; callers treat `wire == 0` as "nothing to
+/// send" (see `pack_segment_datagrams`' caller). Never selected by the
+/// listener today; wire framing unverified against the Go oracle.
 pub fn seal(security: &Security, nonce: &[u8], plain: &[u8]) -> (Vec<u8>, usize) {
     match security {
         Security::Simple => seal_simple(plain),
         Security::Aes128Gcm(key) => {
-            debug_assert_eq!(nonce.len(), 12);
+            if nonce.len() != 12 {
+                return (Vec::new(), 0);
+            }
             use aes_gcm::aead::{Aead, KeyInit, Payload};
             use aes_gcm::{Aes128Gcm, Nonce};
             let cipher = Aes128Gcm::new_from_slice(key).expect("16-byte AES key");
@@ -128,12 +128,15 @@ pub fn seal(security: &Security, nonce: &[u8], plain: &[u8]) -> (Vec<u8>, usize)
     }
 }
 
-/// Open with the configured security mode.
+/// Open with the configured security mode. The AES variant fails closed
+/// (returns `None`) on a wrong-size nonce instead of panicking.
 pub fn open(security: &Security, nonce: &[u8], wire: &[u8]) -> Option<Vec<u8>> {
     match security {
         Security::Simple => open_simple(wire),
         Security::Aes128Gcm(key) => {
-            debug_assert_eq!(nonce.len(), 12);
+            if nonce.len() != 12 {
+                return None;
+            }
             use aes_gcm::aead::{Aead, KeyInit, Payload};
             use aes_gcm::{Aes128Gcm, Nonce};
             let cipher = Aes128Gcm::new_from_slice(key).expect("16-byte AES key");
@@ -184,5 +187,33 @@ mod tests {
     fn empty_seed_selects_simple() {
         assert_eq!(Security::from_seed(b""), Security::Simple);
         assert_ne!(Security::from_seed(b"secret"), Security::Simple);
+    }
+
+    #[test]
+    fn aes_variant_fails_closed_on_wrong_size_nonce() {
+        // Callers pass an empty nonce for the simple variant; the AES arm
+        // used to reach Nonce::from_slice(&[]) which panics (GenericArray
+        // length assert fires in release too). Fail closed instead.
+        let security = Security::from_seed(b"seed");
+        let (sealed, wire) = seal(&security, &[], b"x");
+        assert_eq!(wire, 0, "wrong-size nonce must fail closed, not panic");
+        assert_eq!(open(&security, &[], b"whatever"), None);
+        assert!(sealed.is_empty());
+    }
+
+    #[test]
+    fn aes_variant_roundtrips_with_explicit_nonce() {
+        // Crypto self-consistency ONLY — this is NOT a wire-format claim;
+        // the mKCP AES framing has no Go-oracle vectors in this checkout
+        // (module doc, ADR-0002 Class B divergence #4).
+        let security = Security::from_seed(b"seed");
+        let nonce = [7u8; 12];
+        let plain = b"segment bytes";
+        let (sealed, wire) = seal(&security, &nonce, plain);
+        assert_eq!(wire, plain.len() + 16);
+        assert_eq!(
+            open(&security, &nonce, &sealed[..wire]).as_deref(),
+            Some(&plain[..])
+        );
     }
 }
