@@ -228,3 +228,85 @@ async fn device_shape_config_loads_unchanged() {
         "mihomo writes congestion as bool false"
     );
 }
+
+/// P2 regression (2026-11-26 review): `tti` above 1000 would panic in
+/// `KcpConfig::from_inbound`'s `1000/tti` window derivation — reject at
+/// parse time (Class A) instead.
+#[tokio::test]
+async fn mkcp_tti_above_1000_is_a_hard_error() {
+    let yaml = r#"
+listeners:
+  - name: vmess-bad-tti
+    type: vmess
+    listen: 127.0.0.1
+    port: 0
+    users:
+      - uuid: 00000000-0000-4000-8000-000000000004
+    mkcp-config:
+      tti: 2000
+"#;
+    let Err(error) = load_config_from_str(yaml).await else {
+        panic!("tti above 1000 must be rejected");
+    };
+    assert!(
+        format!("{error:#}").contains("listeners[vmess-bad-tti].mkcp-config.tti"),
+        "{error:#}"
+    );
+}
+
+/// P2 regression (2026-11-26 review): `mtu` below the 18-byte mKCP segment
+/// header leaves no room for payload and underflows `mss()`. Reject at
+/// parse time (Class A); `0` keeps meaning "unset" (default 1350).
+#[tokio::test]
+async fn mkcp_mtu_below_segment_overhead_is_a_hard_error() {
+    let yaml = r#"
+listeners:
+  - name: vmess-bad-mtu
+    type: vmess
+    listen: 127.0.0.1
+    port: 0
+    users:
+      - uuid: 00000000-0000-4000-8000-000000000004
+    mkcp-config:
+      mtu: 10
+"#;
+    let Err(error) = load_config_from_str(yaml).await else {
+        panic!("mtu below segment overhead must be rejected");
+    };
+    assert!(
+        format!("{error:#}").contains("listeners[vmess-bad-mtu].mkcp-config.mtu"),
+        "{error:#}"
+    );
+}
+
+/// P2 regression (2026-11-26 review): an unsupported mihomo key must not be
+/// silently dropped. `mkcp-config.seed` selects AES-128-GCM auth, which the
+/// server-inbound stack does not implement — the config still loads (warned
+/// loudly at parse time) so a harmless key never blocks a boots-required
+/// listener, mirroring the shadowsocks unsupported-key policy.
+#[tokio::test]
+async fn mkcp_seed_loads_with_a_warning_instead_of_failing() {
+    let yaml = r#"
+listeners:
+  - name: vmess-seeded
+    type: vmess
+    listen: 127.0.0.1
+    port: 0
+    users:
+      - uuid: 00000000-0000-4000-8000-000000000005
+    mkcp-config:
+      seed: "not-supported-secret"
+      mtu: 1350
+"#;
+    let config = load_config_from_str(yaml)
+        .await
+        .expect("seed is warned about, not fatal");
+    let ListenerSpec::Vmess(spec) = &config.listeners.named[0].spec else {
+        panic!("expected Vmess listener spec");
+    };
+    assert_eq!(
+        spec.mkcp_config.as_ref().expect("mkcp-config").mtu,
+        Some(1350),
+        "the usable fields of the same block are preserved"
+    );
+}

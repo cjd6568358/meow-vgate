@@ -558,6 +558,12 @@ pub struct RawMkcpConfig {
     pub congestion: Option<MkcpCongestion>,
     pub read_buffer: Option<u32>,
     pub write_buffer: Option<u32>,
+    /// mihomo/Xray mkcp `seed`: switches the auth layer to AES-128-GCM.
+    /// NOT supported by the server-inbound stack (it only implements the
+    /// keyless simple authenticator). Modeled so its presence can be warned
+    /// about at parse time instead of being silently dropped — a seeded
+    /// client cannot connect and the user must be told why (Class A).
+    pub seed: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

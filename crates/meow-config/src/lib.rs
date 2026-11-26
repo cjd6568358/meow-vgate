@@ -4390,10 +4390,46 @@ fn parse_listener_spec(
             allow_insecure: raw_l.allow_insecure.unwrap_or(false),
         })),
         #[cfg(feature = "server-inbound")]
-        "vmess" => Ok(ListenerSpec::Vmess(VmessListenerConfig {
-            users: build_inbound_users(raw_l, "vmess")?,
-            mkcp_config: raw_l.mkcp_config.as_ref().map(build_mkcp_config),
-        })),
+        "vmess" => {
+            if let Some(mkcp) = &raw_l.mkcp_config {
+                // KcpConfig derives its in-flight windows from `1000/tti`; a
+                // value above 1000 would panic on that division in the server
+                // crate. `0` stays "unset" (defaults to 50). Hard error at
+                // parse time (Class A) rather than panicking at startup.
+                if let Some(tti) = mkcp.tti {
+                    if tti > 1000 {
+                        anyhow::bail!(
+                            "listeners[{}].mkcp-config.tti: {tti} exceeds the 1000 ms ceiling",
+                            raw_l.name
+                        );
+                    }
+                }
+                // `mtu: 0` stays "unset" (defaults to 1350); below the 18-byte
+                // mKCP data-segment header there is no room for payload and
+                // `mss()` would underflow.
+                if let Some(mtu) = mkcp.mtu {
+                    if mtu < 19 {
+                        anyhow::bail!(
+                            "listeners[{}].mkcp-config.mtu: {mtu} is below the 19-byte \
+                             mKCP data-segment overhead, leaving no room for a payload",
+                            raw_l.name
+                        );
+                    }
+                }
+                if mkcp.seed.is_some() {
+                    warn!(
+                        "listeners[{}].mkcp-config.seed: not supported (server-inbound uses \
+                         the keyless simple authenticator; a seeded client cannot connect) \
+                         — ignored, remove the key to silence this",
+                        raw_l.name
+                    );
+                }
+            }
+            Ok(ListenerSpec::Vmess(VmessListenerConfig {
+                users: build_inbound_users(raw_l, "vmess")?,
+                mkcp_config: raw_l.mkcp_config.as_ref().map(build_mkcp_config),
+            }))
+        }
         other => {
             anyhow::bail!("unknown listener type '{other}'; expected {SUPPORTED_LISTENER_TYPES}")
         }

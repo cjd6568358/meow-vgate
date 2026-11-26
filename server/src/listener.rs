@@ -6,6 +6,7 @@
 //! smoke binary, or eventually bridge to a routing table in a later card.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
@@ -39,6 +40,9 @@ impl SessionHandler for DiscardHandler {
     }
 }
 
+/// Consecutive accept errors tolerated before the serve loop gives up.
+const MAX_CONSECUTIVE_ACCEPT_ERRORS: u32 = 100;
+
 /// Serve VLESS over WebSocket until the listener is closed.
 ///
 /// Each accepted TCP connection is upgraded to WebSocket, then parsed as one
@@ -52,16 +56,36 @@ pub async fn serve_vless_ws(
     handler: Arc<dyn SessionHandler>,
 ) -> Result<()> {
     let users = Arc::new(users);
+    let mut consecutive_errors: u32 = 0;
     loop {
-        let (tcp, peer) = listener.accept().await?;
-        let ws_path = config.ws_path.clone();
-        let users = Arc::clone(&users);
-        let handler = Arc::clone(&handler);
-        tokio::spawn(async move {
-            if let Err(error) = handle_connection(tcp, ws_path, users, handler).await {
-                tracing::warn!(%peer, %error, "VLESS/WS session failed");
+        match listener.accept().await {
+            Ok((tcp, peer)) => {
+                consecutive_errors = 0;
+                let ws_path = config.ws_path.clone();
+                let users = Arc::clone(&users);
+                let handler = Arc::clone(&handler);
+                tokio::spawn(async move {
+                    if let Err(error) = handle_connection(tcp, ws_path, users, handler).await {
+                        tracing::warn!(%peer, %error, "VLESS/WS session failed");
+                    }
+                });
             }
-        });
+            Err(error) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_ACCEPT_ERRORS {
+                    return Err(error.into());
+                }
+                // Transient accept errors (EMFILE/ENFILE under fd pressure)
+                // must not retire the whole inbound for a long-lived gateway.
+                // Go's listener stops on the first error; we retry with backoff
+                // instead (Class B divergence, registered in
+                // server/docs/adr/0002).
+                tracing::warn!(
+                    "VLESS/WS accept failed ({consecutive_errors} consecutive): {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
     }
 }
 
