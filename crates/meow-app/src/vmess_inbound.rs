@@ -27,7 +27,6 @@ const ADDR_IPV4: u8 = 0x01;
 const ADDR_DOMAIN: u8 = 0x02;
 const ADDR_IPV6: u8 = 0x03;
 const CMD_TCP: u8 = 0x01;
-const CMD_UDP: u8 = 0x02;
 const OPTION_CHUNK_STREAM: u8 = 0x01;
 const OPTION_CHUNK_MASKING: u8 = 0x04;
 
@@ -145,11 +144,9 @@ pub fn authenticate(users: &[[u8; 16]], wire: &[u8]) -> Option<VmessRequest> {
 
 fn metadata_for(request: &VmessRequest, sink: &RouteSink) -> Metadata {
     Metadata {
-        network: if request.command == CMD_UDP {
-            Network::Udp
-        } else {
-            Network::Tcp
-        },
+        // Only TCP commands reach here — UDP is refused by
+        // `ensure_tcp_command` before the response header is written.
+        network: Network::Tcp,
         conn_type: ConnType::Vmess,
         dst_ip: request.dst_ip,
         dst_port: request.port,
@@ -158,6 +155,22 @@ fn metadata_for(request: &VmessRequest, sink: &RouteSink) -> Metadata {
         in_port: sink.inbound_port(),
         ..Default::default()
     }
+}
+
+/// Only TCP (0x01) sessions are served. UDP (0x02, mihomo/XUDP packet-addr)
+/// has no relay here — the sink only calls `route_inbound_tcp`, so routing a
+/// UDP session would silently dial a TCP connection to the target port.
+/// Refuse loudly instead (same Class A stance the VLESS listener takes for
+/// UDP/Mux; Class B gap vs mihomo's XUDP support, registered in
+/// server/docs/adr/0002).
+fn ensure_tcp_command(command: u8) -> Result<()> {
+    if command != CMD_TCP {
+        return Err(anyhow!(
+            "unsupported vmess command {command:#04x}: only TCP is served; UDP is \
+             refused instead of being mis-routed over a TCP dial"
+        ));
+    }
+    Ok(())
 }
 
 /// Serve one VMess session end to end. Generic over the byte transport so
@@ -207,9 +220,7 @@ where
         request.host,
         request.port
     );
-    if request.command != CMD_TCP && request.command != CMD_UDP {
-        return Err(anyhow!("unsupported vmess command: {}", request.command));
-    }
+    ensure_tcp_command(request.command)?;
 
     // 3. Emit response header so the client proceeds to send body records.
     let response_header = seal_response_header(&request.req_key, &request.req_iv, request.resp_v);
@@ -430,6 +441,39 @@ mod tests {
         assert_eq!(opened.req_key, sealed.req_key);
         assert_eq!(opened.req_iv, sealed.req_iv);
         assert_eq!(opened.resp_v, sealed.resp_v);
+    }
+
+    /// Regression (2026-11-26 review, P1): a node configured with `udp: true`
+    /// sends command 0x02 (XUDP/packet-addr). The relay only exists for TCP,
+    /// so the session must fail BEFORE the response header is written —
+    /// routing it would have dialed a TCP connection to the UDP target port.
+    #[test]
+    fn udp_command_is_rejected_instead_of_misrouted() {
+        let uuid = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x03,
+        ];
+        let key = cmd_key(&uuid);
+        let metadata = Metadata {
+            host: SmolStr::from("dns.internal"),
+            dst_port: 53,
+            ..Default::default()
+        };
+        let sealed = meow_proxy::vmess::header::seal_request_header(
+            &key,
+            Security::Aes128Gcm,
+            &metadata,
+            true,
+        )
+        .expect("client seals an XUDP request header");
+        let opened = authenticate(&[uuid], &sealed.bytes).expect("server opens the header");
+        assert_eq!(opened.command, 0x02, "client sealed the XUDP command byte");
+
+        let error = ensure_tcp_command(opened.command).expect_err("UDP must be refused");
+        assert!(
+            format!("{error:#}").contains("mis-routed"),
+            "error should name the mis-route hazard: {error:#}"
+        );
     }
 
     #[tokio::test]

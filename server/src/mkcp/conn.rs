@@ -326,7 +326,15 @@ impl KcpConnection {
         std::mem::take(&mut self.output)
     }
 
-    pub fn close(&mut self, current: u32) {
+    /// Initiate a graceful close: remaining sends flush, then TERMINATE is
+    /// pinged until the 8s cap (the state ladder in [`Self::tick`]).
+    ///
+    /// Takes an epoch-millisecond timestamp exactly like [`Self::input`] and
+    /// [`Self::tick`], and converts it through the connection's relative
+    /// clock first — passing it straight to `set_state` would poison
+    /// `state_begin` against the relative timers.
+    pub fn close(&mut self, epoch_ms: u32) {
+        let current = self.init_clock(epoch_ms);
         self.set_state(State::ReadyToClose, current);
     }
 }

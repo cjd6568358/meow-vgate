@@ -207,10 +207,30 @@ impl MkcpListener {
         });
 
         let mut buffer = vec![0u8; 64 * 1024];
+        let mut consecutive_errors: u32 = 0;
         loop {
-            let (length, peer) = self.socket.recv_from(&mut buffer).await?;
-            self.on_datagram(&buffer[..length], peer, now_millis())
-                .await;
+            match self.socket.recv_from(&mut buffer).await {
+                Ok((length, peer)) => {
+                    consecutive_errors = 0;
+                    self.on_datagram(&buffer[..length], peer, now_millis())
+                        .await;
+                }
+                Err(error) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= MAX_CONSECUTIVE_RECV_ERRORS {
+                        return Err(error);
+                    }
+                    // Transient socket errors (ENFILE/EMFILE, or Windows'
+                    // WSAECONNRESET surfacing a past ICMP unreachable) must
+                    // not retire the whole inbound. Go's mKCP reader stops on
+                    // the first error; we retry with backoff instead (Class B
+                    // divergence, registered in server/docs/adr/0002).
+                    tracing::warn!(
+                        "mkcp recv_from failed ({consecutive_errors} consecutive): {error}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
         }
     }
 }
@@ -221,6 +241,13 @@ impl MkcpListener {
 ///   KCP sending window via `conn.write`.
 /// - Reassembled KCP data is read on each TTI beat and written to `pump_io`
 ///   for the upper layer to consume via [`KcpStream`].
+///
+/// Connection lifecycle: when the handler drops [`KcpStream`] this pump sees
+/// read-EOF and retires the connection through `close()` — pending sends
+/// flush, then TERMINATE is pinged until the peer follows — instead of
+/// waiting for the 30 s idle timeout. Conversely, once the listener's tick
+/// ladder reaches `Terminated` (peer TERMINATE or the timeout ladder), the
+/// pump drops its duplex half so the handler sees read-EOF too.
 fn spawn_pump(conn: Arc<StdMutex<KcpConnection>>, mut pump_io: DuplexStream, tti: Duration) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(tti);
@@ -230,7 +257,13 @@ fn spawn_pump(conn: Arc<StdMutex<KcpConnection>>, mut pump_io: DuplexStream, tti
             tokio::select! {
                 read = pump_io.read(&mut inbound) => {
                     match read {
-                        Ok(0) | Err(_) => break, // upper layer closed
+                        Ok(0) | Err(_) => {
+                            // Upper layer closed (handler dropped KcpStream):
+                            // walk the close ladder now so the peer receives
+                            // TERMINATE instead of a 30 s hang.
+                            conn.lock().expect("kcp mutex poisoned").close(now_millis());
+                            break;
+                        }
                         Ok(n) => {
                             tracing::debug!("mkcp pump: {n} bytes stream -> conn.write");
                             let mut guard = conn.lock().expect("kcp mutex poisoned");
@@ -239,10 +272,16 @@ fn spawn_pump(conn: Arc<StdMutex<KcpConnection>>, mut pump_io: DuplexStream, tti
                     }
                 }
                 _ = ticker.tick() => {
-                    let n = {
+                    let (n, terminated) = {
                         let mut guard = conn.lock().expect("kcp mutex poisoned");
-                        guard.read(&mut outbound)
+                        (guard.read(&mut outbound), guard.state() == State::Terminated)
                     };
+                    // The tick ladder retired the connection (peer TERMINATE,
+                    // or the close-timeout ladder ran out): stop pumping and
+                    // drop our half so the handler's KcpStream sees EOF.
+                    if terminated {
+                        break;
+                    }
                     if n > 0 {
                         tracing::debug!("mkcp pump: {n} bytes -> stream");
                         if pump_io.write_all(&outbound[..n]).await.is_err() {
@@ -254,6 +293,9 @@ fn spawn_pump(conn: Arc<StdMutex<KcpConnection>>, mut pump_io: DuplexStream, tti
         }
     });
 }
+
+/// Consecutive recv errors tolerated before the run loop gives up.
+const MAX_CONSECUTIVE_RECV_ERRORS: u32 = 100;
 
 /// Serialize, authenticate and send KCP segments as UDP datagrams.
 fn send_segments(
@@ -311,6 +353,81 @@ mod tests {
         assert_eq!(
             auth::open(&Security::Simple, &[], &sealed[..wire]).unwrap(),
             payload
+        );
+    }
+
+    // The handler finished and dropped KcpStream: the connection must be
+    // retired through the close ladder (TERMINATE back to the peer) instead
+    // of idling until the 30 s timeout — the pre-fix behaviour hung the peer
+    // with no server-side evidence (2026-11-26 review, P1).
+    #[tokio::test]
+    async fn dropping_the_session_stream_terminates_the_connection() {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("ephemeral UDP port");
+        let server_addr = socket.local_addr().unwrap();
+        let config = ListenerConfig {
+            security: Security::Simple,
+            // Small TTI so the close ladder runs within milliseconds.
+            kcp: KcpConfig::from_inbound(0, 0, 20, 0, 0, 0),
+            tti: Duration::from_millis(20),
+        };
+        let listener = Arc::new(MkcpListener::new(socket, config));
+        let runner = Arc::clone(&listener);
+        tokio::spawn(async move {
+            let _ = runner.run().await;
+        });
+
+        // Client side: one authenticated DATA segment establishes a session.
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("client UDP port");
+        let mut data = Vec::new();
+        Segment::Data {
+            conv: 0xBEEF,
+            option: 0,
+            timestamp: 0,
+            number: 0,
+            sending_next: 0,
+            payload: b"hello".to_vec(),
+        }
+        .serialize(&mut data);
+        let (sealed, wire) = auth::seal(&Security::Simple, &[], &data);
+        client
+            .send_to(&sealed[..wire], server_addr)
+            .await
+            .expect("send datagram");
+
+        let stream = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .expect("session accepted in time")
+            .expect("session present");
+        drop(stream); // the handler is done with its end of the session
+
+        // Expect CMD_TERMINATE from the close ladder, not a 30 s idle hang.
+        let mut saw_terminate = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut buf = vec![0u8; 2048];
+        while !saw_terminate && std::time::Instant::now() < deadline {
+            let wait = deadline.saturating_duration_since(std::time::Instant::now());
+            match tokio::time::timeout(wait, client.recv_from(&mut buf)).await {
+                Ok(Ok((n, _))) => {
+                    if let Some(plain) = auth::open(&Security::Simple, &[], &buf[..n]) {
+                        for seg in segment::parse_all(&plain) {
+                            if let Segment::Command { command, .. } = &seg {
+                                if *command == segment::Command::Terminate {
+                                    saw_terminate = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(
+            saw_terminate,
+            "dropping KcpStream must make the server send CMD_TERMINATE to the peer"
         );
     }
 }
