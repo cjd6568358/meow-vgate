@@ -1,7 +1,7 @@
 # ADR 0002: Single-process drop-in replacement and replayable fork delta
 
-- **Status:** Proposed — 待机主签字
-- **Date:** 2026-11-23（同日修订：废弃"配置拆分 + 双进程"方案）
+- **Status:** Proposed — 待机主正式归档签字（2026-11-24 方案 B 已真机部署并重启验证；核心决策均按本 ADR 执行中）
+- **Date:** 2026-11-23（同日修订：废弃"配置拆分 + 双进程"方案；2026-11-26 复核后同步 delta 清单与分歧登记）
 - **Author(s):** meow-vgate maintainers
 - **Supersedes:** —
 - **Related:** [ADR 0001](0001-server-footprint-budget.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、[ADR 0002 上游分歧策略](../../../docs/adr/0002-upstream-divergence-policy.md)
@@ -62,25 +62,39 @@
 - `listener_feature_gate` 与 listener match 各新增分支；spawn 时传 `tunnel.clone()`。
 - 默认 feature 不含 `server-inbound`，因此 8 MiB client cap 与默认发布物不受影响。
 
-### 4. fork delta 清单（唯一允许修改的上游位置）
+### 4. fork delta 清单（换 tag 时需重放的全部 upstream 文件改动）
 
-| 文件 | hook | 性质 |
+2026-11-26 复核对齐（详表见 ARCHITECTURE.md §5.2，两处同步维护）：
+
+**upstream 既有文件增量**：
+
+| 文件 | 改动 | 性质 |
 |---|---|---|
+| 根 `Cargo.toml` | `exclude = ["server"]` | 新增 |
 | `crates/meow-config/Cargo.toml` | `server-inbound` feature | 新增 |
-| `crates/meow-config/src/raw.rs` | `RawListener` 字段 | 新增、feature 内 |
-| `crates/meow-config/src/lib.rs:171` | `ListenerSpec` 变体 | 新增 |
-| `crates/meow-config/src/lib.rs:4267` | `parse_listener_spec` arm | 新增 |
+| `crates/meow-config/src/raw.rs` | `RawListener` 4 字段 + `RawInboundUser`/`MkcpCongestion`/`RawMkcpConfig`（含 seed 告警字段） | 新增、feature 内 |
+| `crates/meow-config/src/lib.rs` | `ListenerSpec::{Vless,Vmess}` 变体及配置结构、`parse_listener_spec` 两 arm（含 mkcp tti/mtu 硬错、seed 告警）、`build_inbound_users`/`build_mkcp_config`、`SUPPORTED_LISTENER_TYPES` | 新增分支 |
+| `crates/meow-config/tests/server_inbound_listener_test.rs` | C-01/C-02 + 范围校验/seed 用例 | 新增测试文件 |
 | `crates/meow-app/Cargo.toml` | feature + optional path dep | 新增 |
-| `crates/meow-app/src/main.rs:695` | `listener_feature_gate` | 新增 |
-| `crates/meow-app/src/main.rs:1355` | listener match | 新增分支 |
+| `crates/meow-app/src/main.rs` | 两 `mod` 声明、`listener_feature_gate` 分支、listener match 两 arm | 新增分支 |
+
+**fork-only 新文件**（重放 = 整体复制）：
+
+| 文件 | 性质 |
+|---|---|
+| `crates/meow-app/src/server_inbound.rs`（RouteSink/serve_vless） | 新文件 |
+| `crates/meow-app/src/vmess_inbound.rs`（VMess AEAD 入站 + mKCP 接入） | 新文件 |
+| `crates/meow-proxy/src/vmess/header.rs`：三个 test-only 助手提升 pub（`server_open_request_header`/`request_header_frame_len`/`seal_response_header`） | 可见性提升，签名不变 |
+| `crates/meow-proxy/src/vmess/body.rs`：新增 `new_server_full`/`new_server_full_masked` | 新增方法 |
 
 不改任何既有分支语义；`meow-transport` 与 `route_inbound_tcp` 的实现完全不动。
 
 ### 5. 升级流程
 
-从新 upstream tag 建分支（不 merge）→ 按上表重放 7 处新增 → 复制 `server/` → 跑门禁
-（根 workspace fmt/clippy/rustdoc/测试 + server 门禁 + R-01/C-01..03/DROP-01）→ 机主签字。
-版本矩阵维护在 ARCHITECTURE.md §9.4。
+从新 upstream tag 建分支（不 merge）→ 按 §4 清单重放 → 复制 fork 自有树
+（`server/`、workflow、e2e、脚本、`server/docs/`）→ 跑门禁
+（根 workspace fmt/clippy/rustdoc/测试 + server 门禁 + 三条 e2e + 8/14 MiB 双 cap）
+→ 机主签字。版本矩阵维护在 ARCHITECTURE.md §9.4。
 
 ### 6. 设备纪律
 
@@ -117,11 +131,25 @@
 
 ## Migration
 
-1. 按 §4 清单在 fork 内实现 meow-config / meow-app 的 7 处新增。
-2. `meow-server` 实现 `tunnel-bridge` feature 与 `spawn_inbound`，共享 `Tunnel`。
-3. 补 C-01..03、R-01、DROP-01 测试。
-4. 机主授权后在光猫 `/tmp` 单进程试跑，再受控切换入口。
-5. upstream 新 tag 按 §5 重放并填版本矩阵。
+1. ✅ 按 §4 清单在 fork 内实现 meow-config / meow-app 的 delta（2026-11-24）。
+2. ✅ 上游对接以 meow-app 的 `server_inbound.rs` + `vmess_inbound.rs` 落地
+   （无 `tunnel-bridge` feature；见 §3 实现注，2026-11-24）。
+3. ✅ C-01..03、B-01、DROP-01 补齐（e2e 进 CI；真机部署验证，2026-11-24）。
+4. ✅ 光猫 `/tmp` 单进程试跑 → 方案 B 受控窗口持久化（2026-11-24，重启自启验证通过）。
+5. ⚠ 待办：upstream 新 tag 的首轮重放演练（清单已按实仓对齐，2026-11-26）。
+
+## 已知 Class B 分歧（Go v1.19.34 基准）
+
+2026-11-26 系统复核后集中登记（以前零散在各处，此节为正本）：
+
+| # | 分歧 | 状态 |
+|---|---|---|
+| 1 | `mkcp-config.congestion` 只解析不接入状态机（无 BBR 开关） | 既知；不影响连通性 |
+| 2 | VMess UDP（XUDP/packet-addr）与 VLESS UDP/Mux 命令**显式拒绝**而非 relay | VLESS 侧历来如此；VMess 侧 2026-11-26 起从"静默误路由成 TCP 拨号"改为硬错（P1 修复）。上游 mihomo 支持 UDP，属功能缺口非缺陷 |
+| 3 | TCP accept / UDP recv_from 瞬时错误退避重试（连续 100 次≈10s 才退役） | Go 侧首错即停；长期网关场景取韧性。2026-11-26 起 |
+| 4 | mKCP `seed` 不支持（仅 keyless simple 认证）；AES-128-GCM auth 代码在库内但不可达 | 2026-11-26 起解析期显式告警（不再静默丢弃该键） |
+| 5 | 发侧每段独立 datagram，未按 MTU 聚合多段 | wire 兼容；吞吐有损；待优化 |
+| 6 | 会话表无并发上限；新建会话仅需一个合法 auth 包 | 19002 公网暴露已见扫描；加固/限流待机主拍板 |
 
 ## 运行期观察（2026-11-25 真机）
 
@@ -166,8 +194,8 @@
   传入 KcpConfig，导致 `sending_buffer_size = 4/1250 = 0`、mKCP 响应发不出去
   （真机 curl 超时，CI 因测试配置 buffer 组合不同而未暴露）。已在 meow-app 传入时
   `saturating_mul(1024*1024)`，真机用原 config（buffer=4 不改）验证 VMess/mKCP HTTP 200。
-  `congestion` 目前仍只解析不接入 KCP 状态机（我们的实现无 BBR 开关），属已知
-  Class B 分歧，不影响连通性。
+  另：2026-11-26 起 `seed` 显式告警（见 Class B 分歧 #4），`congestion` 仍不接入
+  （分歧 #1）。
 - 升级节奏：跟每个 upstream tag，还是选定版本。
 
 ## References
@@ -177,3 +205,5 @@
 - `crates/meow-tunnel/src/tcp.rs:378`、`crates/meow-tunnel/src/lib.rs:24`
 - `server/docs/ARCHITECTURE.md` §5、§6、§9
 - `D:/workspace/server/armbian/bin/mihomo/`、`D:/workspace/server/f4610u/`（**不入库**）
+
+> AI生成

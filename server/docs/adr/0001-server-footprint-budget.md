@@ -93,10 +93,11 @@ stat -c '%s' target/aarch64-unknown-linux-musl/release/meow-server
 ```
 
 发布 profile 应与根 `Cargo.toml` 一致：`lto = true`、`strip = true`、
-`codegen-units = 1`、`panic = "abort"`、`opt-level = "z"`。当前 `server/Cargo.toml`
-尚未声明该 profile，属 Migration 步骤。
+`codegen-units = 1`、`panic = "abort"`、`opt-level = "z"`。这一步已落地
+（2026-11-24，server/Cargo.toml 的 `[profile.release]`）。
 
-armv7hf 只做类型级 `cargo check`，不设体积 hard gate（无部署 cap 契约）。
+armv7hf 与 aarch64 一样接受 14 MiB cap 的阻断校验（§4）；早期"仅类型级 check、
+不设 hard gate"的表述已被签字后的双目标 cap 取代。
 
 ### 4. 阈值（已签字生效）
 
@@ -154,13 +155,15 @@ armv7hf 只做类型级 `cargo check`，不设体积 hard gate（无部署 cap �
 2. ✅ CI server 专属 job：fmt、clippy `-D warnings`、rustdoc `-D warnings`、
    `cargo test --all-targets`、两个 ARM 目标 `cargo check` — 2026-11-24 完成。
 3. ✅ 首次实测 aarch64 stripped 体积并回填本 ADR — 2026-11-24 完成
-   （13,085,328 B 单进程；client minimal 7,683,456 B）。
+   （首次 13,085,328 B；§4 表及 CI 汇报的 13,086,672 B 为同日复测值，
+   以每次 CI 实测为准，client minimal 7,683,456 B）。
 4. ✅ 机主 2026-11-24 签字确认 14 MiB hard cap，两个静态产物的体积上报已升级为阻断门槛。
 
 ## Open questions
 
 - ~~正式 cap 数值~~ — 2026-11-24 机主签字定为 14 MiB（14,680,064 B），两个静态产物共用，已接入阻断 CI。
-- server 与 client 是分发为两个二进制，还是同一镜像内的两个进程？影响是否需要合并体积预算。
+- ~~server 与 client 是分发为两个二进制，还是同一镜像内的两个进程？~~ — 已裁决：
+  **单进程**（ADR-0002；一个 `meow` + `--features server-inbound`，共享 `Tunnel`）。
 - ~~bridge 所需 C++ 交叉工具链由哪个 CI runner 提供~~ — 已解决：`client-size` job
   用 `cargo-zigbuild 0.23.2` + `zig 0.13.0`（与 build.yml 同 pin）成功构建单进程
   aarch64-musl 二进制， boringssl 栈复用 client 同一套。
@@ -174,3 +177,5 @@ armv7hf 只做类型级 `cargo check`，不设体积 hard gate（无部署 cap �
 - `CONTRIBUTING.md:15-22`
 - `server/Cargo.toml` 的 workspace 隔离注释
 - `server/docs/ARCHITECTURE.md` §2、§5
+
+> AI生成

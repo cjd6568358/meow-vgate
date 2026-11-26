@@ -14,9 +14,10 @@
 //!
 //! Deployment targets are `aarch64-unknown-linux-musl` and
 //! `armv7-unknown-linux-gnueabihf` (hard-float). The 8 MiB aarch64-musl cap
-//! belongs to the client binary and is untouched by this workspace; a server
-//! image needs its own size ADR before release. Keeping this crate free of
-//! boring-sys / OpenSSL means type-level cross checks need no C toolchain.
+//! belongs to the client binary and is untouched by this workspace; the
+//! single-process `server-inbound` build carries its own signed 14 MiB cap
+//! (server/docs/adr/0001). Keeping this crate free of boring-sys / OpenSSL
+//! means type-level cross checks need no C toolchain.
 //!
 //! # ADR-0001 and the missing `accept()`
 //!
@@ -38,10 +39,18 @@
 //!
 //! # Scope, honestly
 //!
-//! Implemented: VLESS request-header decoding, UUID authentication, WebSocket
-//! accept with path validation, and the 19001 accept loop up to a session
-//! handler boundary. VMess/mKCP (19002) is a typed placeholder — see
-//! [`vmess`] — and no relay/tunnel routing is wired in yet.
+//! Implemented: VLESS request-header decoding, UUID authentication,
+//! response framing, a WebSocket accept layer with exact-path validation and
+//! Xray/v2ray 0-RTT early data, the full mKCP server transport (simple /
+//! AES-128-GCM auth, big-endian u16-conv segments, sending/receiving
+//! windows, RFC6298 RTO, UDP listener with a duplex KcpStream bridge), and
+//! accept loops that stop at a session-handler boundary.
+//!
+//! The VMess AEAD handshake and body relay live one level up, in the meow-app
+//! fork delta (`crates/meow-app/src/vmess_inbound.rs`), reusing meow-proxy's
+//! golden-vector-locked header/body primitives — see
+//! server/docs/ARCHITECTURE.md §5 for the delta layout. This crate stays
+//! tunnel-free so it can be checked with pure Rust dependencies only.
 
 pub mod config;
 pub mod error;

@@ -14,8 +14,9 @@
 #
 # TARGET MATRIX (owner-specified): aarch64-unknown-linux-musl and
 # armv7-unknown-linux-gnueabihf. The 8 MiB aarch64-musl cap applies to the
-# *client* binary; this crate has its own size budget to be set by a new ADR
-# before it is ever linked into a release image. All dependencies here are
+# *client* binary; the single-process `server-inbound` build carries its own
+# signed 14 MiB cap (server/docs/adr/0001, hard-gated in
+# .github/workflows/server-inbound.yml). All dependencies here are
 # pure Rust (no boring-sys / OpenSSL), so `cargo check --target ...` needs no C
 # cross-toolchain; a full cross link still needs the matching GCC linker.
 #

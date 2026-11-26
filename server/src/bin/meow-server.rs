@@ -41,7 +41,9 @@ struct Args {
     #[arg(long, default_value_t = false)]
     relay: bool,
 
-    /// Accepted only to fail loudly: mKCP inbound is not implemented yet.
+    /// Accepted only to fail loudly: the smoke binary does not serve
+    /// VMess/mKCP (no tunnel to relay into). Use the meow-app
+    /// `server-inbound` build for the real thing.
     #[arg(long, value_name = "ADDR")]
     vmess_mkcp: Option<SocketAddr>,
 }
