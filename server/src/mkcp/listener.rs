@@ -155,7 +155,19 @@ impl MkcpListener {
                 let connection = Arc::new(StdMutex::new(KcpConnection::new(kcp_config)));
                 let (client_io, pump_io) = tokio::io::duplex(64 * 1024);
                 spawn_pump(Arc::clone(&connection), pump_io, self.config.tti);
-                let _ = self.accepted_tx.try_send(KcpStream { io: client_io });
+                // Backpressure: a full accept queue means the session
+                // handler is not draining fast enough (64 pending). The
+                // connection is still inserted below — the dropped stream
+                // half makes the pump see read-EOF, the close ladder fires,
+                // and the client receives TERMINATE instead of a hang. It
+                // must never be silent though: the operator needs the
+                // signal that the accept rate exceeds the handler capacity.
+                if let Err(error) = self.accepted_tx.try_send(KcpStream { io: client_io }) {
+                    tracing::warn!(
+                        "mkcp: accept queue full — refusing new session conv={conv} \
+                         from {peer} (close ladder will notify the client): {error}"
+                    );
+                }
                 entry.insert(Session {
                     conn: connection,
                     peer,
@@ -238,6 +250,9 @@ impl MkcpListener {
     }
 }
 
+/// Consecutive recv errors tolerated before the run loop gives up.
+const MAX_CONSECUTIVE_RECV_ERRORS: u32 = 100;
+
 /// Bridge a KCP connection to a byte stream.
 ///
 /// - Data written by the upper layer (`pump_io` readable) is queued into the
@@ -296,9 +311,6 @@ fn spawn_pump(conn: Arc<StdMutex<KcpConnection>>, mut pump_io: DuplexStream, tti
         }
     });
 }
-
-/// Consecutive recv errors tolerated before the run loop gives up.
-const MAX_CONSECUTIVE_RECV_ERRORS: u32 = 100;
 
 /// Serialize, authenticate and send KCP segments as UDP datagrams.
 ///
@@ -461,7 +473,15 @@ mod tests {
     // retired through the close ladder (TERMINATE back to the peer) instead
     // of idling until the 30 s timeout — the pre-fix behaviour hung the peer
     // with no server-side evidence (2026-11-26 review, P1).
-    #[tokio::test]
+    //
+    // Runs on a multi_thread runtime (like the production `#[tokio::main]`),
+    // NOT the default current-thread test runtime: under the parallel test
+    // swarm the spawned pump task was observed (tokio 1.54, Windows) to
+    // never be polled again after its first immediate tick — the close
+    // ladder then never fired and this test flaked at ~4–15%. The driver-
+    // pinned single-thread scheduler was the common factor; two worker
+    // threads did not reproduce it in hundreds of runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropping_the_session_stream_terminates_the_connection() {
         let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
             .await
@@ -507,6 +527,7 @@ mod tests {
 
         // Expect CMD_TERMINATE from the close ladder, not a 30 s idle hang.
         let mut saw_terminate = false;
+        let mut received_kinds: Vec<String> = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         let mut buf = vec![0u8; 2048];
         while !saw_terminate && std::time::Instant::now() < deadline {
@@ -520,7 +541,11 @@ mod tests {
                                     saw_terminate = true;
                                 }
                             }
+                            let label = format!("{seg:?}");
+                            received_kinds.push(label.chars().take(24).collect());
                         }
+                    } else {
+                        received_kinds.push(format!("unparseable({n}B)"));
                     }
                 }
                 _ => break,
@@ -528,8 +553,103 @@ mod tests {
         }
         assert!(
             saw_terminate,
-            "dropping KcpStream must make the server send CMD_TERMINATE to the peer"
+            "dropping KcpStream must make the server send CMD_TERMINATE to the peer \
+             (received datagram/symbol stream: {received_kinds:?})"
         );
+    }
+
+    // Backpressure (2026-11-26 review P2-4): when the 64-slot accept queue
+    // is full, the refused session's stream is dropped — but the connection
+    // stays tracked, so its pump sees read-EOF, the close ladder fires, and
+    // the client gets TERMINATE instead of a silent hang.
+    // multi_thread flavour for the same scheduler reason as the drop test
+    // above (65 sessions with 20 ms TTI timers amplify the phenomenon).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accept_queue_backpressure_notifies_the_refused_client() {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("ephemeral UDP port");
+        let server_addr = socket.local_addr().unwrap();
+        let config = ListenerConfig {
+            security: Security::Simple,
+            kcp: KcpConfig::from_inbound(0, 0, 20, 0, 0, 0),
+            tti: Duration::from_millis(20),
+        };
+        let listener = Arc::new(MkcpListener::new(socket, config));
+        let runner = Arc::clone(&listener);
+        tokio::spawn(async move {
+            let _ = runner.run().await;
+        });
+
+        // One client socket opening 65 sessions (distinct convs): the first
+        // 64 fill the accept channel, the 65th is refused.
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("client UDP port");
+        for conv in 1u16..=65 {
+            let mut data = Vec::new();
+            Segment::Data {
+                conv,
+                option: 0,
+                timestamp: 0,
+                number: 0,
+                sending_next: 0,
+                payload: b"hi".to_vec(),
+            }
+            .serialize(&mut data);
+            let (sealed, wire) = auth::seal(&Security::Simple, &[], &data);
+            client
+                .send_to(&sealed[..wire], server_addr)
+                .await
+                .expect("send datagram");
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        // Exactly 64 sessions came through the accept channel; keep every
+        // stream alive so only the refused one walks the close ladder.
+        let mut streams = Vec::new();
+        while let Ok(Some(stream)) =
+            tokio::time::timeout(Duration::from_millis(150), listener.accept()).await
+        {
+            streams.push(stream);
+        }
+        assert_eq!(streams.len(), 64, "the accept channel holds exactly 64");
+
+        // The refused session must have received CMD_TERMINATE (its conv,
+        // whichever lost the race — loopback usually preserves order).
+        let mut terminated_convs = std::collections::BTreeSet::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut buf = vec![0u8; 4096];
+        while terminated_convs.is_empty() && std::time::Instant::now() < deadline {
+            let wait = deadline.saturating_duration_since(std::time::Instant::now());
+            match tokio::time::timeout(wait, client.recv_from(&mut buf)).await {
+                Ok(Ok((n, _))) => {
+                    if let Some(plain) = auth::open(&Security::Simple, &[], &buf[..n]) {
+                        for seg in segment::parse_all(&plain) {
+                            if let Segment::Command {
+                                conv,
+                                command: segment::Command::Terminate,
+                                ..
+                            } = &seg
+                            {
+                                terminated_convs.insert(*conv);
+                            }
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(
+            terminated_convs.len(),
+            1,
+            "exactly the refused session terminates, got {terminated_convs:?}"
+        );
+        assert!(
+            terminated_convs.contains(&65) || terminated_convs.contains(&1),
+            "the refused conv must be one of the opened sessions"
+        );
+        drop(streams); // silence the close ladders of the accepted 64
     }
 }
 
