@@ -41,10 +41,11 @@
 //!
 //! Implemented: VLESS request-header decoding, UUID authentication,
 //! response framing, a WebSocket accept layer with exact-path validation and
-//! Xray/v2ray 0-RTT early data, the full mKCP server transport (simple /
-//! AES-128-GCM auth, big-endian u16-conv segments, sending/receiving
-//! windows, RFC6298 RTO, UDP listener with a duplex KcpStream bridge), and
-//! accept loops that stop at a session-handler boundary.
+//! Xray/v2ray 0-RTT early data, the full mKCP server transport (simple auth
+//! — AES-128-GCM kept unwired, see [`mkcp::auth`] — big-endian u16-conv
+//! segments, MTU-batched datagram sends, sending/receiving windows, RFC6298
+//! RTO, UDP listener with a duplex KcpStream bridge), and accept loops that
+//! stop at a session-handler boundary.
 //!
 //! The VMess AEAD handshake and body relay live one level up, in the meow-app
 //! fork delta (`crates/meow-app/src/vmess_inbound.rs`), reusing meow-proxy's

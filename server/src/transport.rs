@@ -127,13 +127,15 @@ fn decode_early_data(value: &str) -> Option<Vec<u8>> {
 /// Byte-oriented view of a WebSocket message stream.
 ///
 /// `tokio-tungstenite 0.29` exposes `Stream<Message>` / `Sink<Message>` but no
-/// `AsyncRead`/`AsyncWrite`, so this adapter maps binary frames to bytes. It
-/// answers Pings, ignores Pongs, and turns Close/EOF into a clean read EOF.
+/// `AsyncRead`/`AsyncWrite`, so this adapter maps binary frames to bytes.
+/// Ping replies are tungstenite's own job (it queues a Pong when a Ping is
+/// read and flushes it on the next read/write — the docs say not to answer
+/// manually, and this adapter no longer duplicates it). It ignores Pongs
+/// and turns Close/EOF into a clean read EOF.
 pub struct WsByteStream<S> {
     inner: WebSocketStream<S>,
     read_buffer: Bytes,
     read_offset: usize,
-    pending_pong: Option<Bytes>,
 }
 
 impl<S> WsByteStream<S> {
@@ -145,7 +147,6 @@ impl<S> WsByteStream<S> {
             inner,
             read_buffer: Bytes::from(early),
             read_offset: 0,
-            pending_pong: None,
         }
     }
 }
@@ -191,8 +192,10 @@ where
                         this.read_offset = count;
                         return Poll::Ready(Ok(()));
                     }
-                    Message::Ping(payload) => {
-                        this.pending_pong = Some(payload);
+                    Message::Ping(_) => {
+                        // tungstenite queues the Pong reply itself and
+                        // flushes it on the next read/write — answering
+                        // manually here used to send a duplicate Pong.
                     }
                     Message::Pong(_) => {}
                     Message::Close(_) | Message::Frame(_) => {
@@ -220,20 +223,6 @@ where
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
-        if let Some(payload) = this.pending_pong.take() {
-            let mut sink = Pin::new(&mut this.inner);
-            match sink.as_mut().poll_ready(context) {
-                Poll::Ready(Ok(())) => sink
-                    .start_send(Message::Pong(payload))
-                    .map_err(io::Error::other)?,
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(io::Error::other(error))),
-                Poll::Pending => {
-                    this.pending_pong = Some(payload);
-                    return Poll::Pending;
-                }
-            }
-        }
-
         let mut sink = Pin::new(&mut this.inner);
         match sink.as_mut().poll_ready(context) {
             Poll::Ready(Ok(())) => {
