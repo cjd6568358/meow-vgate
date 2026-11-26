@@ -3,7 +3,9 @@
 //! Binds a UDP socket, unwraps the auth layer and header on each datagram,
 //! dispatches segments to per-session KCP connections keyed by
 //! (peer IP, peer port, conversation), and drives every connection's TTI
-//! tick. Newly established sessions are yielded through `accept()`.
+//! tick. Newly established sessions are yielded through `accept()`. Outgoing
+//! segments are batched whole-per-datagram up to the MTU before the auth
+//! layer seals them (Go `kcp.go flush()` behaviour).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -174,6 +176,7 @@ impl MkcpListener {
     pub async fn run(self: Arc<Self>) -> std::io::Result<()> {
         let tti = self.config.tti;
         let security = self.config.security.clone();
+        let mtu = self.config.kcp.mtu;
         let sessions = Arc::clone(&self.sessions);
         let socket = Arc::clone(&self.socket);
         tokio::spawn(async move {
@@ -201,7 +204,7 @@ impl MkcpListener {
                 }
                 drop(guard);
                 for (peer, segments) in outgoing {
-                    send_segments(&socket, &security, segments, peer);
+                    send_segments(&socket, &security, segments, peer, mtu);
                 }
             }
         });
@@ -298,16 +301,28 @@ fn spawn_pump(conn: Arc<StdMutex<KcpConnection>>, mut pump_io: DuplexStream, tti
 const MAX_CONSECUTIVE_RECV_ERRORS: u32 = 100;
 
 /// Serialize, authenticate and send KCP segments as UDP datagrams.
+///
+/// Segments are packed whole-per-datagram up to the configured MTU before
+/// the auth layer seals each datagram — the batching Go's `kcp.go flush()`
+/// applies. One sealed datagram may therefore carry several back-to-back
+/// segments (the receiver's `parse_all` handles that natively); a segment is
+/// never split across datagrams, so framing survives even an absurdly small
+/// MTU (a lone oversized segment sends alone instead of being torn).
 fn send_segments(
     socket: &UdpSocket,
     security: &Security,
     segments: Vec<Segment>,
     peer: SocketAddr,
+    mtu: u32,
 ) {
-    for segment in segments {
-        let mut plain = Vec::new();
-        segment.serialize(&mut plain);
+    for plain in pack_segment_datagrams(&segments, mtu) {
         let (sealed, wire) = auth::seal(security, &[], &plain);
+        if wire == 0 {
+            // Fail-closed auth guard (see mkcp::auth): nothing to send.
+            // The listener never selects AES today, so this is defensive.
+            tracing::warn!("mkcp: auth sealed an empty datagram, skipping");
+            continue;
+        }
         // Never silently drop a send failure: a UDP sendto can fail on a
         // constrained target (small socket buffer, address-family mismatch)
         // and the peer then sees a hang with no server-side evidence.
@@ -315,6 +330,26 @@ fn send_segments(
             tracing::warn!("mkcp sendto {peer} failed: {e}");
         }
     }
+}
+
+/// Serialize whole segments into plaintext datagram payloads of at most
+/// `mtu` bytes each. Mirrors Go's `kcp.go flush()` accumulation buffer.
+fn pack_segment_datagrams(segments: &[Segment], mtu: u32) -> Vec<Vec<u8>> {
+    let mtu = mtu as usize;
+    let mut datagrams = Vec::new();
+    let mut current = Vec::new();
+    for segment in segments {
+        let mut serialized = Vec::new();
+        segment.serialize(&mut serialized);
+        if !current.is_empty() && current.len() + serialized.len() > mtu {
+            datagrams.push(std::mem::take(&mut current));
+        }
+        current.extend_from_slice(&serialized);
+    }
+    if !current.is_empty() {
+        datagrams.push(current);
+    }
+    datagrams
 }
 
 fn now_millis() -> u32 {
@@ -354,6 +389,72 @@ mod tests {
             auth::open(&Security::Simple, &[], &sealed[..wire]).unwrap(),
             payload
         );
+    }
+
+    use crate::mkcp::segment::DATA_OVERHEAD;
+
+    fn data_segment(number: u32, payload: &[u8]) -> Segment {
+        Segment::Data {
+            conv: 1,
+            option: 0,
+            timestamp: 0,
+            number,
+            sending_next: 0,
+            payload: payload.to_vec(),
+        }
+    }
+
+    // Go kcp.go flush() batches segments into MTU-sized datagrams; the
+    // pre-batching code sent one datagram per segment (~46 B header +
+    // one syscall each) — the 2026-11-26 review's Class B divergence #5.
+    #[test]
+    fn pack_batches_whole_segments_up_to_the_mtu() {
+        let segments: Vec<Segment> = (0..8u32).map(|i| data_segment(i, &[0xA5; 100])).collect();
+        let mtu = 1350u32;
+        let datagrams = pack_segment_datagrams(&segments, mtu);
+        let per_segment = DATA_OVERHEAD + 100;
+        let expected = (per_segment * 8).div_ceil(mtu as usize);
+        assert!(datagrams.len() < 8, "small segments must be batched");
+        assert_eq!(datagrams.len(), expected);
+        for datagram in &datagrams {
+            assert!(datagram.len() <= mtu as usize, "datagram exceeds mtu");
+        }
+        // Every segment must survive unpacking, in order and whole.
+        let mut flat = Vec::new();
+        for datagram in &datagrams {
+            flat.extend(segment::parse_all(datagram));
+        }
+        assert_eq!(flat.len(), 8);
+        for (i, seg) in flat.iter().enumerate() {
+            match seg {
+                Segment::Data {
+                    number, payload, ..
+                } => {
+                    assert_eq!(*number, i as u32);
+                    assert_eq!(payload.len(), 100);
+                }
+                other => panic!("expected DATA, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn pack_keeps_an_mtusized_segment_alone() {
+        // A segment exactly the size of the MTU fills its datagram; the
+        // next segment must start a new datagram instead of overflowing.
+        let mss = 100usize;
+        let mtu = (DATA_OVERHEAD + mss) as u32;
+        let segments = vec![data_segment(0, &vec![1u8; mss]), data_segment(1, &[2; 5])];
+        let datagrams = pack_segment_datagrams(&segments, mtu);
+        assert_eq!(datagrams.len(), 2);
+        assert_eq!(datagrams[0].len(), mtu as usize);
+        assert!(datagrams[1].len() <= mtu as usize);
+        // Both survive unpacking.
+        let flat: Vec<Segment> = datagrams
+            .iter()
+            .flat_map(|d| segment::parse_all(d))
+            .collect();
+        assert_eq!(flat.len(), 2);
     }
 
     // The handler finished and dropped KcpStream: the connection must be

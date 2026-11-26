@@ -148,7 +148,7 @@
 | 2 | VMess UDP（XUDP/packet-addr）与 VLESS UDP/Mux 命令**显式拒绝**而非 relay | VLESS 侧历来如此；VMess 侧 2026-11-26 起从"静默误路由成 TCP 拨号"改为硬错（P1 修复）。上游 mihomo 支持 UDP，属功能缺口非缺陷 |
 | 3 | TCP accept / UDP recv_from 瞬时错误退避重试（连续 100 次≈10s 才退役） | Go 侧首错即停；长期网关场景取韧性。2026-11-26 起 |
 | 4 | mKCP `seed` 不支持（仅 keyless simple 认证）；AES-128-GCM auth 代码在库内但不可达 | 2026-11-26 起解析期显式告警（不再静默丢弃该键） |
-| 5 | 发侧每段独立 datagram，未按 MTU 聚合多段 | wire 兼容；吞吐有损；待优化 |
+| 5 | ~~发侧每段独立 datagram，未按 MTU 聚合多段~~ | **已对齐 Go flush 行为（2026-11-26）**：发侧整段打包至 MTU 后再密封发送；段永不跨 datagram 拆分。锁定于 `mkcp::listener` 的 pack 单测 |
 | 6 | 会话表无并发上限；新建会话仅需一个合法 auth 包 | 19002 公网暴露已见扫描；加固/限流待机主拍板 |
 
 ## 运行期观察（2026-11-25 真机）

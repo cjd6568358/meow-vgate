@@ -107,10 +107,11 @@ Class A 硬错。另支持 Xray/v2ray/mihomo 客户端的 **WS 0-RTT early data*
 `Sec-WebSocket-Protocol` 里的 base64url（无 padding）解码后注入读缓冲，先于任何 WS 帧
 到达 VLESS 读取方，握手响应不回 echo（对齐 go-baseline/transport/vmess/websocket.go）。
 
-mKCP 传输在 `server/src/mkcp/`：auth（simple/AES-128-GCM）、big-endian u16-conv 分段、
+mKCP 传输在 `server/src/mkcp/`：auth（simple 上线；AES-128-GCM 保留库内但不接线，错误 nonce 显式 fail-closed）、big-endian u16-conv 分段、
 发送/接收窗口、RFC6298 RTO、UDP listener（会话按 (peer, conv) 分流，`KcpStream` 经
 tokio duplex 与 pump 桥接；handler drop 流时立即走 close 阶梯发 TERMINATE，
-pump 感知 Terminated 后让对端读 EOF）。
+pump 感知 Terminated 后让对端读 EOF）。发侧按 Go `kcp.go flush()` 行为将整段
+聚合至 MTU 内的 datagram 再密封，段永不跨 datagram 拆分。
 
 ### 3.2 协议层
 
@@ -136,7 +137,7 @@ golden-vector 鎻锁原语（`server_open_request_header` / `request_header_fram
 | 19001 TCP listen + WS Upgrade | **已实现（含真机部署）** | 路径精确匹配；接进 meow-app 单进程 |
 | VLESS 头解析 / UUID 鉴权 | **已实现** | TCP 命令；UDP/Mux 显式拒绝（Class A，响应头前拒） |
 | WS 0-RTT early data | **已实现** | `Sec-WebSocket-Protocol` base64url，不回 echo |
-| 19002 mKCP 传输 | **已实现（含真机部署）** | `mkcp/` 全栈：auth/分段/窗口/RTO/会话生命周期；simple 认证（seed 不支持，解析期告警） |
+| 19002 mKCP 传输 | **已实现（含真机部署）** | `mkcp/` 全栈：auth/分段/窗口/RTO/会话生命周期；发侧按 MTU 聚合（Go flush 对齐）；simple 认证（seed 不支持，解析期告警） |
 | VMess AEAD 头 / 正文 relay | **已实现** | meow-app `vmess_inbound.rs`，复用 meow-proxy golden 原语；TCP 命令，UDP 显式拒绝（Class B 分歧） |
 | 响应头与载荷透传 | **已实现** | 到共享 `Arc<Tunnel>`（`route_inbound_tcp`） |
 | TLS / WSS | 未实现 | 部署当前用明文 WS；后置 |
@@ -241,7 +242,7 @@ mixed/http/socks5/tproxy/shadowsocks，遇 `vless` 硬错。这是上游的**能
 
 | 层 | 命令 / 载体 | 门槛 |
 |---|---|---|
-| server 单元 | `server/` 下 `cargo test --all-targets` | 全部通过；2026-11-26 起 58 个 |
+| server 单元 | `server/` 下 `cargo test --all-targets` | 全部通过；2026-11-26 起发侧聚合/nonce 加固后 59 个 |
 | server 协议 e2e | `server/tests/vless_ws.rs`：ephemeral 端口 + 真实 WS 握手 | 6 个：响应头、回显、错误路径 |
 | VMess/mKCP 入站测试 | `meow-app --features server-inbound`（`vmess_inbound::tests`） | 头/正文分帧、UDP 拒绨、drop→TERMINATE 等逐字节语义 |
 | meow-config 测试 | `server_inbound_listener_test.rs` | C-01/C-02 + mkcp 范围校验/seed 告警 |
@@ -250,18 +251,20 @@ mixed/http/socks5/tproxy/shadowsocks，遇 `vless` 硬错。这是上游的**能
 | fork delta 门禁 | 根 workspace fmt/clippy/rustdoc/测试 + server 门禁（`server-inbound.yml`，含 fmt/clippy/rustdoc/test） | 全绿 |
 | 体积 | 8 MiB client cap + 14 MiB 单进程双目标 cap | 均阻断（已签字） |
 
-### 7.2 现有测试映射（2026-11-26 实点清：server 58 单元 + 6 e2e；meow-app vmess 7；meow-config 8）
+### 7.2 现有测试映射（2026-11-26 实点清：server 59 单元 + 6 e2e；meow-app vmess 7；meow-config 8）
 
 | 组 | 数量 | 覆盖 |
 |---|---|---|
 | `vless::tests` | 13 | 头解码、addons、截断/atyp/空域名、鉴权、响应头 |
 | `transport::tests` | 5 | WS 路径精确匹配、404，0-RTT early data 解码/拒绝 |
-| `config::tests` | 4 | 19001/19002 锚定、WS 路径、空配置 |
+| `config::tests` | 1 | 19001/19002/"/ws" 部署契约锚定 |
 | `vmess::tests` | 1 | smoke bin 的显式 not-implemented |
-| `mkcp::{auth,segment,window,receiving,rto,conn,listener}` | 34 | auth 轮回/拒销、分段解析、窗口/快重传/丢包、缓存重排、RFC6298 golden、双向 loopback（epoch 时钟）、会话生命周期 |
+| `mkcp::{auth,segment,window,receiving,rto,conn,listener}` | 39 | auth 轮回/拒销/nonce fail-closed，分段解析，窗口/快重传/丢包，缓存重排，RFC6298 golden，双向 loopback（epoch 时钟），会话生命周期（drop→TERMINATE），发侧 MTU 打包 |
 | `tests/vless_ws.rs` | 6 | e2e echo、错误路径、未知用户、UDP 拒绨、payload 不预读 |
-| `vmess_inbound::tests`（meow-app） | 7 | 明文头解析、客户端密封头开放、帧长=精确头长、正文分频偏移、**UDP 命令拒绨** |
+| `vmess_inbound::tests`（meow-app） | 7 | 明文头解析、客户端密封头开放、帧长=精确头长、正文分频偏移、UDP 命令拒绨 |
 | `server_inbound_listener_test.rs`（meow-config） | 8 | C-01 全字段、C-01 默认值、C-02 未知 type/空 users、真机形快回归、tti/mtu 范围硬错、seed 告警 |
+
+（骨架阶段的 `ServerConfig`/`InboundConfig` 构造器及其 3 个测试已于 2026-11-26 随死代码清理移除，部署端口锪定测试保留。）
 
 ### 7.3 测试状态（原待补清单收敛）
 
