@@ -65,10 +65,22 @@ build_one() {
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS="$shared" \
     -DCMAKE_C_FLAGS="$COMMON_FLAGS" -DCMAKE_CXX_FLAGS="$COMMON_FLAGS" \
-    >"$WORK_ROOT/$mode-config.log" 2>&1 || { tail -40 "$WORK_ROOT/$mode-config.log"; return 1; }
+    >"$WORK_ROOT/$mode-config.log" 2>&1 || { dump_failure "$mode-config"; return 1; }
   echo "=== build $mode ==="
   cmake --build "$bdir" --target ssl crypto -j 4 \
-    >"$WORK_ROOT/$mode-build.log" 2>&1 || { tail -40 "$WORK_ROOT/$mode-build.log"; return 1; }
+    >"$WORK_ROOT/$mode-build.log" 2>&1 || { dump_failure "$mode-build"; return 1; }
+}
+
+# Failure logs go to the step summary too — the raw job log is not readable
+# without GitHub auth, but the summary is always visible on the run page.
+dump_failure() {
+  local tag="$1"
+  echo "FAILED: $tag (last 60 lines)" >&2
+  tail -60 "$WORK_ROOT/$tag.log" >&2
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    { echo "## A/B build failed: $tag"; echo '```'; tail -60 "$WORK_ROOT/$tag.log"; echo '```'; } \
+      >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  fi
 }
 
 build_one static
@@ -76,12 +88,37 @@ build_one shared
 
 # --- Strip + measure ----------------------------------------------------
 size_of() { stat -c '%s' "$1" 2>/dev/null || wc -c < "$1"; }
-strip_copy() { "$STRIP" -o "$2" "$1" 2>/dev/null || "$STRIP" "$1" && cp "$1" "$2"; }
+# Copy first (dereference symlinks), then strip in place. binutils strip has
+# no portable -o; stripping a copy avoids touching the build tree.
+strip_copy() {
+  cp -L "$1" "$2" || return 1
+  "$STRIP" "$2" || return 1
+}
+
+echo "=== produced artifacts ==="
+find "$WORK_ROOT/static" "$WORK_ROOT/shared" \
+  \( -name 'libssl.a' -o -name 'libcrypto.a' -o -name 'libssl.so*' -o -name 'libcrypto.so*' \) \
+  -printf '%y %p -> %l\n' 2>/dev/null | sort
+
+# Prefer the unversioned .so; fall back to the real versioned file, and
+# dereference symlinks so cp gets bytes rather than a dangling link.
+pick_so() {
+  local dir="$1" base="$2"
+  local f
+  f=$(find "$dir" -maxdepth 2 -type f -name "lib${base}.so" | head -1)
+  [ -z "$f" ] && f=$(find "$dir" -maxdepth 2 -type f -name "lib${base}.so.*" | head -1)
+  [ -z "$f" ] && f=$(find "$dir" -maxdepth 2 -type l -name "lib${base}.so*" | head -1)
+  printf '%s' "$f"
+}
 
 S_SSL=$(find "$WORK_ROOT/static" -name 'libssl.a' | head -1)
 S_CRYPTO=$(find "$WORK_ROOT/static" -name 'libcrypto.a' | head -1)
-H_SSL=$(find "$WORK_ROOT/shared" -name 'libssl.so' | head -1)
-H_CRYPTO=$(find "$WORK_ROOT/shared" -name 'libcrypto.so' | head -1)
+H_SSL=$(pick_so "$WORK_ROOT/shared" ssl)
+H_CRYPTO=$(pick_so "$WORK_ROOT/shared" crypto)
+
+for v in S_SSL:$S_SSL S_CRYPTO:$S_CRYPTO H_SSL:$H_SSL H_CRYPTO:$H_CRYPTO; do
+  [ -n "${v#*:}" ] || { echo "missing artifact: ${v%%:*}" >&2; exit 1; }
+done
 
 strip_copy "$S_SSL"    "$WORK_ROOT/static/ssl.strip.a"
 strip_copy "$S_CRYPTO" "$WORK_ROOT/static/crypto.strip.a"
