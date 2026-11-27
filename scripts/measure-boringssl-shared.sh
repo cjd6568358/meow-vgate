@@ -47,6 +47,14 @@ echo "BoringSSL source: $BSSL_SRC"
 WORK_ROOT="${WORK_ROOT:-/tmp/bssl-ab}"
 rm -rf "$WORK_ROOT"; mkdir -p "$WORK_ROOT"
 
+# Self-contained toolchain file. Do NOT use ${BSSL_SRC}/../cmake/armv7-linux.cmake:
+# CI binds only the boringssl/ subtree, so the sibling cmake/ dir is absent.
+cat > "$WORK_ROOT/toolchain.cmake" <<'EOF'
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+set(CMAKE_CROSSCOMPILING TRUE)
+EOF
+
 # Flags mirror the app's release profile as closely as a standalone C build
 # can: -Os (size), section GC, no unwind tables. No LTO — Rust does fat LTO
 # at final link; this measures the library contribution, not the meow delta.
@@ -59,7 +67,7 @@ build_one() {
   cmake -S "$BSSL_SRC" -B "$bdir" -G Ninja \
     -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
     -DCMAKE_ASM_COMPILER="$CC" -DCMAKE_AR="$AR" \
-    -DCMAKE_TOOLCHAIN_FILE="$BSSL_SRC/../cmake/armv7-linux.cmake" \
+    -DCMAKE_TOOLCHAIN_FILE="$WORK_ROOT/toolchain.cmake" \
     -DCMAKE_SYSTEM_PROCESSOR=armv7 \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
     -DCMAKE_BUILD_TYPE=Release \
@@ -77,6 +85,7 @@ dump_failure() {
   local tag="$1"
   echo "FAILED: $tag (last 60 lines)" >&2
   tail -60 "$WORK_ROOT/$tag.log" >&2
+  echo "::error::A/B $tag failed — see step summary for the last 60 log lines"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     { echo "## A/B build failed: $tag"; echo '```'; tail -60 "$WORK_ROOT/$tag.log"; echo '```'; } \
       >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
