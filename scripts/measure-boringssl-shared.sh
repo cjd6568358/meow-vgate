@@ -85,7 +85,11 @@ dump_failure() {
   local tag="$1"
   echo "FAILED: $tag (last 60 lines)" >&2
   tail -60 "$WORK_ROOT/$tag.log" >&2
-  echo "::error::A/B $tag failed — see step summary for the last 60 log lines"
+  # Put the tail of the log into the annotation message so the failure is
+  # readable from the public check-runs API (raw job logs need auth).
+  local detail
+  detail=$(tail -8 "$WORK_ROOT/$tag.log" | tr '\n' ' ' | cut -c1-900)
+  echo "::error::A/B $tag failed: $detail"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     { echo "## A/B build failed: $tag"; echo '```'; tail -60 "$WORK_ROOT/$tag.log"; echo '```'; } \
       >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
