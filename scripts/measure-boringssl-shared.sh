@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# A/B measurement: how big is BoringSSL on armv7hf, static vs shared?
+#
+# Answers the C-plan question: if BoringSSL shipped as a .so next to meow
+# instead of being statically linked in, how many bytes would that .so cost?
+#
+# SIZE-ONLY experiment. It does NOT produce a runnable meow that dynamically
+# links the .so — boring-sys hardcodes
+# `cargo:rustc-link-lib=static=crypto` / `static=ssl` (build/main.rs:732-733),
+# so switching the real binary needs a boring-sys patch + a crate feature.
+# Measure first; decide later.
+#
+# Runs inside the armv7 toolchain container (has cmake + arm gcc + strip):
+#   docker run --rm -v "$PWD:/src" -w /src \
+#     ghcr.io/rust-cross/rust-musl-cross:armv7-musleabihf-amd64 \
+#     bash scripts/measure-boringssl-shared.sh
+#
+# Search order for BoringSSL source:
+#   1. BSSL_SRC env var
+#   2. cargo registry copy of boring-sys 5.2.0 (after `cargo fetch --locked`)
+#
+# Output: stripped byte sizes for both variants, written to stdout and to
+# $GITHUB_STEP_SUMMARY when running in CI.
+
+set -euo pipefail
+
+TARGET=armv7-unknown-linux-musleabihf
+CC="${TARGET}-gcc"
+CXX="${TARGET}-g++"
+AR="${TARGET}-ar"
+STRIP="${TARGET}-strip"
+
+for tool in cmake "$CC" "$CXX" "$AR" "$STRIP"; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
+done
+
+# --- Locate BoringSSL source -------------------------------------------
+if [ -z "${BSSL_SRC:-}" ]; then
+  BSSL_SRC=$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" \
+    -type d -path '*/boring-sys-5.2.0/deps/boringssl' 2>/dev/null | head -1)
+fi
+[ -n "${BSSL_SRC:-}" ] && [ -f "$BSSL_SRC/CMakeLists.txt" ] || {
+  echo "BoringSSL source not found; run cargo fetch --locked first" >&2; exit 1;
+}
+echo "BoringSSL source: $BSSL_SRC"
+
+WORK_ROOT="${WORK_ROOT:-/tmp/bssl-ab}"
+rm -rf "$WORK_ROOT"; mkdir -p "$WORK_ROOT"
+
+# Flags mirror the app's release profile as closely as a standalone C build
+# can: -Os (size), section GC, no unwind tables. No LTO — Rust does fat LTO
+# at final link; this measures the library contribution, not the meow delta.
+COMMON_FLAGS="-Os -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables"
+
+build_one() {
+  local mode="$1" shared="OFF" bdir="$WORK_ROOT/$1"
+  [ "$mode" = shared ] && shared="ON"
+  echo "=== configure $mode ==="
+  cmake -S "$BSSL_SRC" -B "$bdir" -G Ninja \
+    -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
+    -DCMAKE_ASM_COMPILER="$CC" -DCMAKE_AR="$AR" \
+    -DCMAKE_TOOLCHAIN_FILE="$BSSL_SRC/../cmake/armv7-linux.cmake" \
+    -DCMAKE_SYSTEM_PROCESSOR=armv7 \
+    -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS="$shared" \
+    -DCMAKE_C_FLAGS="$COMMON_FLAGS" -DCMAKE_CXX_FLAGS="$COMMON_FLAGS" \
+    >"$WORK_ROOT/$mode-config.log" 2>&1 || { tail -40 "$WORK_ROOT/$mode-config.log"; return 1; }
+  echo "=== build $mode ==="
+  cmake --build "$bdir" --target ssl crypto -j 4 \
+    >"$WORK_ROOT/$mode-build.log" 2>&1 || { tail -40 "$WORK_ROOT/$mode-build.log"; return 1; }
+}
+
+build_one static
+build_one shared
+
+# --- Strip + measure ----------------------------------------------------
+size_of() { stat -c '%s' "$1" 2>/dev/null || wc -c < "$1"; }
+strip_copy() { "$STRIP" -o "$2" "$1" 2>/dev/null || "$STRIP" "$1" && cp "$1" "$2"; }
+
+S_SSL=$(find "$WORK_ROOT/static" -name 'libssl.a' | head -1)
+S_CRYPTO=$(find "$WORK_ROOT/static" -name 'libcrypto.a' | head -1)
+H_SSL=$(find "$WORK_ROOT/shared" -name 'libssl.so' | head -1)
+H_CRYPTO=$(find "$WORK_ROOT/shared" -name 'libcrypto.so' | head -1)
+
+strip_copy "$S_SSL"    "$WORK_ROOT/static/ssl.strip.a"
+strip_copy "$S_CRYPTO" "$WORK_ROOT/static/crypto.strip.a"
+strip_copy "$H_SSL"    "$WORK_ROOT/shared/ssl.strip.so"
+strip_copy "$H_CRYPTO" "$WORK_ROOT/shared/crypto.strip.so"
+
+s_ssl=$(size_of "$WORK_ROOT/static/ssl.strip.a")
+s_crypto=$(size_of "$WORK_ROOT/static/crypto.strip.a")
+h_ssl=$(size_of "$WORK_ROOT/shared/ssl.strip.so")
+h_crypto=$(size_of "$WORK_ROOT/shared/crypto.strip.so")
+s_total=$((s_ssl + s_crypto))
+h_total=$((h_ssl + h_crypto))
+
+echo
+echo "=== A/B result (armv7hf, stripped) ==="
+printf '%-28s %12s %10s\n' artifact bytes MiB
+report() { printf '%-28s %12d %10.2f\n' "$1" "$2" "$(awk -v b="$2" 'BEGIN{printf "%.2f", b/1048576}')"; }
+report "libssl.a (static)"    "$s_ssl"
+report "libcrypto.a (static)" "$s_crypto"
+report "STATIC TOTAL"         "$s_total"
+report "libssl.so (shared)"   "$h_ssl"
+report "libcrypto.so (shared)" "$h_crypto"
+report "SHARED TOTAL"         "$h_total"
+
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  {
+    echo "## BoringSSL A/B (armv7hf, stripped)"
+    echo '```'
+    echo "STATIC TOTAL: $s_total bytes ($(awk -v b="$s_total" 'BEGIN{printf "%.2f",b/1048576}') MiB)"
+    echo "SHARED TOTAL: $h_total bytes ($(awk -v b="$h_total" 'BEGIN{printf "%.2f",b/1048576}') MiB)"
+    echo '```'
+  } >> "$GITHUB_STEP_SUMMARY"
+fi
+
+echo
+echo "Note: static .a is the whole archive; the linker GC + Rust LTO pull only"
+echo "the symbols meow actually uses, so the real static-link delta in the final"
+echo "binary is SMALLER than STATIC TOTAL. .so sizes are the real C-plan cost."

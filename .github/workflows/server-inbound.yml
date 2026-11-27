@@ -247,6 +247,40 @@ jobs:
           echo "aarch64 single-process cap:     $CAP bytes, headroom $((CAP - dev)) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
 
 
+  # Manual-only: measure how much BoringSSL costs on armv7hf, static vs
+  # shared .so. This is a SIZE experiment for the C-plan decision, not a
+  # runnable dynamic binary — boring-sys hardcodes static link, so shipping
+  # a .so requires a separate patch. Runs in the same armv7 toolchain
+  # container as armv7-static (cmake + arm gcc + strip all present).
+  measure-boringssl-shared:
+    # Runs on the push that changes this measurement (to get numbers without
+    # a manual dispatch) and on demand. Other pushes skip it — two full
+    # BoringSSL builds are too expensive for every server-inbound commit.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.modified, 'scripts/measure-boringssl-shared.sh') ||
+      contains(github.event.head_commit.modified, '.github/workflows/server-inbound.yml')
+    runs-on: ubuntu-latest
+    env:
+      TOOLCHAIN_IMAGE: ghcr.io/rust-cross/rust-musl-cross:armv7-musleabihf-amd64@sha256:c2603200841eac1a6681d7beef44816c9954b0f59952ae7ae96652788287e16f
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch crates to get vendored BoringSSL source
+        run: cargo fetch --locked
+
+      - name: Build static + shared BoringSSL and report stripped sizes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .temp
+          : > .temp/bssl-ab-summary.md
+          docker run --rm \
+            -e GITHUB_STEP_SUMMARY=/src/.temp/bssl-ab-summary.md \
+            -v "$PWD:/src" -v "$HOME/.cargo:/root/.cargo" -w /src \
+            "$TOOLCHAIN_IMAGE" bash scripts/measure-boringssl-shared.sh
+          cat .temp/bssl-ab-summary.md >> "$GITHUB_STEP_SUMMARY"
+
   # armv7hf STATIC artifact (32-bit ARM hard-float, musl). Not the glibc
   # gnueabihf target (dynamically linked, needs GLIBC_2.28). Uses upstream's
   # container toolchain because boring-sys hits a time64-vs-libc clash on
