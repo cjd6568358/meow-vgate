@@ -30,7 +30,7 @@ CXX="${TARGET}-g++"
 AR="${TARGET}-ar"
 STRIP="${TARGET}-strip"
 
-for tool in cmake "$CC" "$CXX" "$AR" "$STRIP"; do
+for tool in cmake make "$CC" "$CXX" "$AR" "$STRIP"; do
   command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
 done
 
@@ -64,7 +64,9 @@ build_one() {
   local mode="$1" shared="OFF" bdir="$WORK_ROOT/$1"
   [ "$mode" = shared ] && shared="ON"
   echo "=== configure $mode ==="
-  cmake -S "$BSSL_SRC" -B "$bdir" -G Ninja \
+  # Use the default Unix Makefiles generator — the toolchain image has
+  # make but no ninja. (Earlier -G Ninja legs failed at configure.)
+  cmake -S "$BSSL_SRC" -B "$bdir" \
     -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
     -DCMAKE_ASM_COMPILER="$CC" -DCMAKE_AR="$AR" \
     -DCMAKE_TOOLCHAIN_FILE="$WORK_ROOT/toolchain.cmake" \
