@@ -181,8 +181,26 @@
   **免密被当开放代理滥用**。可选加固（机主未决定，均未执行）：
   ① 挂 `port_guard.sh -p 7891 -c -t 80 -w 600` 挡扫描器短连；
   ② config `authentication` 加用户名密码（会影响现有客户端，需同步配置）。
-- 设备公网侧已见扫描器打 19001（日志 `invalid VLESS address type: 0`），
-  说明端口暴露面真实存在，非理论风险。
+- 设备公网侧已见扫描器打 19001：2026-11-25 记录签名 `invalid VLESS address type: 0`；
+  2026-11-27 全量审查见 20 条 VLESS/WS 握手失败（来源 `204.76.203.x` / `85.217.149.x` /
+  `212.73.148.x` / `165.232.167.247`；错误为 `invalid token` / `Handshake not finished` /
+  `Unsupported HTTP method`），服务均正确拒绝。端口暴露面真实存在，非理论风险。
+
+### 运行期日志量化审查（2026-11-27，17 小时窗口）
+
+对 `/tmp/mihomo.log`（`2026-11-26T15:43:05Z` → `2026-11-27T08:43:12Z`，6680 行）全量审查：
+
+- **0 ERROR / 0 FATAL / 0 panic**；DEBUG 5442 / INFO 999 / WARN 239。无崩溃、无重启、无 fd/OOM 告警。
+- 239 条 WARN 全部可解释：134 `meow_tunnel::tcp` dial 5s 超时（直连节点链路抖动，集中
+  `11-26T16–17Z`、`11-27T00–01Z` 与 `08:00–08:11Z`；最近 30 分钟 0 WARN）；72 TLS
+  `skip-cert-verify=true` 提示；20 VLESS/WS 握手失败（公网扫描器，见上）；12 XTLS Vision
+  UDP Class B 分歧（§表 #2）；1 QUIC sniff 未实现。
+- DEBUG 级 relay error 74 条：63 `Connection reset by peer`、7 `Broken pipe`、
+  3 `hysteria2 driver closed`、1 `vless: server closed before response header`——均为对端断开，
+  非本地故障。
+- 启动日志锚点：`INFO meow: VLESS/WS listener 'vless-19001' started on 0.0.0.0:19001` +
+  `VMess/mKCP listener 'vmess-19002' started on UDP 0.0.0.0:19002`，确认单进程双入站在现网运行。
+- 日志带 ANSI 转义（`\x1b[2m` 等），统计前须 `sed 's/\x1b\[[0-9;]*m//g'` 清理，否则字段解析错位。
 
 ## Open questions
 
