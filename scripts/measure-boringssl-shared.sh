@@ -147,6 +147,11 @@ h_crypto=$(size_of "$WORK_ROOT/shared/crypto.strip.so")
 s_total=$((s_ssl + s_crypto))
 h_total=$((h_ssl + h_crypto))
 
+# Also emit as a notice annotation: the public check-runs API exposes
+# annotations but not step summary text, so this is how CI numbers are read
+# without an authenticated log fetch.
+echo "::notice::BSSL A/B armv7hf stripped bytes: static_ssl=$s_ssl static_crypto=$s_crypto STATIC_TOTAL=$s_total shared_ssl=$h_ssl shared_crypto=$h_crypto SHARED_TOTAL=$h_total"
+
 echo
 echo "=== A/B result (armv7hf, stripped) ==="
 printf '%-28s %12s %10s\n' artifact bytes MiB
