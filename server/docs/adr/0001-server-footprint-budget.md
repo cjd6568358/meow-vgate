@@ -31,6 +31,17 @@ upstream 之外，必须在本 fork 内永久自持。因此问题不是"怎么�
 | 2026-11-24 | `aarch64-unknown-linux-musl` **single-process `full + server-inbound`** | **13,086,672 B**（~12.5 MiB） | 机主终局目标二进制；cargo-zigbuild 0.23.2 + zig 0.13.0 |
 | 2026-11-24 | `armv7-unknown-linux-musleabihf` **single-process `full + server-inbound`** | **13,049,004 B**（~12.4 MiB） | 32-bit ARM 次级目标；专用容器脚本；`file` 实证静态 |
 | 2026-11-24 | **server-inbound delta（fair）** | **+155,368 B**（~152 KB） | 与 full baseline 同 feature 集合作差 |
+| 2026-11-27 | **BoringSSL 静态归档**（armv7hf，全量 .a） | **2,829,044 B**（2.70 MiB） | `libssl.a` 753,506 + `libcrypto.a` 2,075,538；C 方案 A/B 的 A 组 |
+| 2026-11-27 | **BoringSSL 共享库**（armv7hf，全量 .so） | **2,080,284 B**（1.98 MiB） | `libssl.so` 466,732 + `libcrypto.so` 1,613,552；C 方案 A/B 的 B 组 |
+
+2026-11-27 的 A/B 由 `scripts/measure-boringssl-shared.sh` 在 armv7 toolchain
+容器里实测（同一份 boring-sys 5.2.0 vendored 源码、cortex-a7、`-Os` + section GC、
+strip 后量字节；CI `server-inbound.yml` 的 `measure-boringssl-shared` job）。
+两者都是**整库口径**：静态 .a 链进 meow 时 LTO + `--gc-sections` 只会保留实际
+引用的符号，真实二进制增量小于 2,829,044 B；共享 .so 则需整份随包部署，
+2,080,284 B 是 C 方案的真实外部成本。结论：把 BoringSSL 改成随包 .so，
+库本身只省 748,760 B（0.71 MiB，静止态的 73.5%），且 boring-sys 硬编码
+`rustc-link-lib=static=crypto/ssl` 需改成动态链接——代价与收益不成比例。
 
 两个目标产物都由 CI 用 `file` 硬校验为 **`statically linked, stripped`**：
 - aarch64: `ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, stripped`
